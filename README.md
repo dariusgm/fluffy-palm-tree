@@ -291,6 +291,12 @@ scripts/         helper scripts (work estimate for a share)
   in the test set.
 - `image_max_edge = 1024` keeps name tags and UI text readable. Lowering it saves
   little, because image tokens are not the bottleneck.
+- Parallel requests (`llama-server --parallel 2`, `llm.workers = 2`) gave about 20% more
+  total throughput in a warm-cache benchmark (17 images: 558 s vs 667 s), while each request
+  took longer (64 s vs 39 s). Prompt processing and image encoding are a large part of each
+  call and do not benefit, so more slots are unlikely to help much on this hardware.
+  `--parallel N` splits `-c` across slots; raise `-c` accordingly (e.g. `-c 65536` for
+  2 x 32k).
 - llama-server must run with a vision projector (`--mmproj ...` or `-hf ... --mmproj-auto`).
   `GET /health/llm` reports `vision: false` otherwise.
 
