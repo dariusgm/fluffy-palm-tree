@@ -73,6 +73,7 @@ pub async fn run(
     while let Some(res) = workers.join_next().await {
         res.context("index worker panicked")?;
     }
+    crate::db::fts::rebuild(&state.db).await;
     Ok(())
 }
 

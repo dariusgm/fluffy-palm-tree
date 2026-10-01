@@ -1,6 +1,7 @@
 mod health;
 mod index;
 mod jobs;
+mod search;
 
 use axum::Router;
 use axum::middleware;
@@ -18,6 +19,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health::health))
         .route("/index", post(index::start_index))
+        .route("/search", post(search::search))
         .route("/jobs", get(jobs::list))
         .route("/jobs/{id}", get(jobs::get).delete(jobs::cancel))
         .with_state(state)

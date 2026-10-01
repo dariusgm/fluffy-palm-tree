@@ -1,6 +1,6 @@
 # Phase 4: `/search`
 
-**Status:** todo
+**Status:** done
 
 ## Goal
 Search over extracted text, summaries, paths and all metadata through a JSON body,
@@ -42,13 +42,26 @@ without exposing SQL.
 - FTS: DuckDB's FTS index does not update itself, so `fts::rebuild()` builds a
   `search_docs(file_id, body)` table (concatenated text per file) plus
   `PRAGMA create_fts_index('search_docs', 'file_id', 'body', overwrite=1)`.
-  This runs after index and import jobs (debounced). Score with `fts_main_search_docs.match_bm25`.
+  This runs after index and import jobs and at startup (not debounced; the DB mutex serializes rebuilds). Score with `fts_main_search_docs.match_bm25`.
 - Response: `{ total, results: [{ file, image?, document?, video?, score, matched_frames? }] }`.
   Document `content` is not returned in full, only a snippet (first 300 chars).
 
 ## Checklist
-- [ ] `src/search/query.rs` (parsing + SQL builder) with unit tests for every field type
-- [ ] `src/db/fts.rs`: rebuild function, called at the end of index jobs
-- [ ] `src/api/search.rs` + route
-- [ ] Integration test: index fixtures, search by text, by height, with a range, unknown field → 400
-- [ ] Update README and tasks/README.md
+- [x] `src/search/query.rs` (parsing + SQL builder) with unit tests for every field type
+- [x] `src/db/fts.rs`: rebuild function, called at the end of index jobs
+- [x] `src/api/search.rs` + route
+- [x] Integration test: index fixtures, search by text, by height, with a range, unknown field → 400
+- [x] Update README and tasks/README.md
+
+## Implementation notes
+- The `ignore` regex is `(\.|[^a-z0-9])+`, so digits are kept (e.g. invoice numbers).
+  DuckDB's default drops them.
+- `PRAGMA create_fts_index` must run in its own `execute_batch`. In the same batch as
+  the `CREATE TABLE`, it is bound before the table exists.
+- English stemmer and stopword list. Short words like `sub` are stopwords and cannot be
+  searched via `text` (use `path` instead). A configurable language (e.g. German) is in the backlog.
+- Substring fallback (`text_mode: "substring"`): each term is an `ILIKE` on the
+  concatenated body. A file matches if any term matches, and the score is the number of
+  matching terms.
+- Additional fields beyond the plan: `id`, `sha256`, `summary`, `uid`, `gid`, `indexed_at`, `mode`.
+- `Db::set_fts_available(false)` lets tests exercise the fallback against real DuckDB.

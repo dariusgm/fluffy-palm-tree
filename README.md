@@ -46,7 +46,7 @@ client ──► axum (private-network allowlist)
 | `GET /health` | implemented |
 | `POST /index` | implemented |
 | `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}` | implemented |
-| `POST /search` | planned (phase 4) |
+| `POST /search` | implemented |
 | `POST /import_media` | planned (phase 5) |
 | `GET /health/llm` | planned (phase 5) |
 
@@ -73,6 +73,28 @@ For videos, one frame is sampled every `video_frame_interval_secs` (default 10 s
 { "q": { "height": "300" } }
 { "q": { "kind": "video", "height": { "gte": 1080 }, "video_codec": "h264" }, "limit": 20, "offset": 0 }
 ```
+
+- **`text`** runs a BM25 full-text search over the file name, directory names, LLM summary,
+  document text, video frame descriptions and tags. It uses English stemming, so `fox`
+  also matches `foxes`, and stopwords are ignored.
+- All other keys filter on metadata. Values can be strings or numbers, and numeric
+  and time fields also accept a range like `{"gte": .., "gt": .., "lte": .., "lt": .., "eq": ..}`.
+
+| Field | Match |
+|---|---|
+| `kind`, `extension`, `mime`, `root`, `doc_type`, `format`, `video_codec`, `audio_codec`, `summary_status`, `mode_str`, `sha256`, `id`, `tag` | exact, case-insensitive; a list means any of |
+| `path`, `name`, `summary`, `container` | substring, case-insensitive |
+| `width`, `height` (image or video), `duration_secs`, `fps`, `size_bytes`, `page_count`, `uid`, `gid` | number or range |
+| `mtime`, `indexed_at` | `"2024-05-01"` (whole day), RFC 3339 timestamp, or range |
+| `mode` | octal permissions, e.g. `"644"` |
+
+- An unknown field or invalid value returns `400`. `limit` defaults to 20 (max 200).
+- Each result contains the file metadata, `score`, and an `image`/`document`/`video`
+  object depending on its kind. Documents return a 300-character `snippet`. For text
+  queries, videos list the `matched_frames` (timestamp and description).
+- `text_mode` is `fts`, or `substring` if the DuckDB FTS extension is unavailable.
+- The full-text index is rebuilt when an index or import job finishes. Files that a
+  running job has just added can already be found by metadata filters, but not by `text` yet.
 
 ### `GET /jobs/{id}`
 
@@ -128,6 +150,7 @@ src/
   detect.rs      file kind / doc type / MIME detection
   extract/       metadata extractors (image header, text/pdftotext, ffprobe)
   pipelines/     job implementations (index)
+  search/        JSON query → parameterized SQL, result mapping
   api/           HTTP handlers
 tests/           integration tests
 tasks/           phase plans and progress (start here when resuming work)

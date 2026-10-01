@@ -11,4 +11,6 @@
 - [ ] EXIF metadata (capture date, camera; GPS optional because it is privacy sensitive)
 - [ ] Detect files deleted at the source during re-index (mark `missing`)
 - [ ] Optional API token in addition to the IP allowlist
+- [ ] Configurable FTS language (stemmer/stopwords, e.g. German) via config
+- [ ] Incremental FTS: rebuild periodically during long jobs, not only at the end
 - [ ] systemd unit file

@@ -9,7 +9,7 @@ first, then the first phase that is not `done`.
 | 1 | [01-scaffold.md](01-scaffold.md) | done |
 | 2 | [02-database.md](02-database.md) | done |
 | 3 | [03-index.md](03-index.md) | done |
-| 4 | [04-search.md](04-search.md) | todo |
+| 4 | [04-search.md](04-search.md) | done |
 | 5 | [05-import-media.md](05-import-media.md) | todo |
 | 6 | [06-live-llm.md](06-live-llm.md) | todo (needs the LLM server running) |
 | 7 | [07-later.md](07-later.md) | backlog |

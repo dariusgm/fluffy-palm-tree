@@ -1,3 +1,4 @@
+pub mod fts;
 pub mod models;
 mod schema;
 
@@ -33,10 +34,17 @@ impl Db {
 
     fn init(mut conn: Connection) -> anyhow::Result<Self> {
         schema::migrate(&mut conn)?;
-        let fts = match conn.execute_batch("INSTALL fts; LOAD fts;") {
+        let fts = match conn
+            .execute_batch("INSTALL fts; LOAD fts;")
+            .map_err(anyhow::Error::from)
+            .and_then(|()| fts::rebuild_sync(&conn))
+        {
             Ok(()) => true,
             Err(e) => {
-                tracing::warn!(error = %e, "DuckDB FTS extension unavailable, text search falls back to ILIKE");
+                tracing::warn!(
+                    error = format!("{e:#}"),
+                    "DuckDB FTS unavailable, text search falls back to ILIKE"
+                );
                 false
             }
         };
@@ -48,6 +56,11 @@ impl Db {
 
     pub fn fts_available(&self) -> bool {
         self.fts_available.load(Ordering::Relaxed)
+    }
+
+    /// Forces substring search instead of BM25 (used to test the fallback path).
+    pub fn set_fts_available(&self, available: bool) {
+        self.fts_available.store(available, Ordering::Relaxed);
     }
 
     pub async fn call<F, R>(&self, f: F) -> anyhow::Result<R>
