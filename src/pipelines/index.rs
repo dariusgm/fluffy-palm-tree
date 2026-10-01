@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use crate::detect::{self, Detected};
 use crate::extract;
 use crate::jobs::Job;
 use crate::security::ResolvedPath;
+use crate::staging::Staging;
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -33,6 +35,14 @@ enum Outcome {
     TooLarge,
 }
 
+/// Result of walking the tree: relative paths of all supported files, and whether the
+/// walk saw everything (no read errors, not cancelled). Only a complete walk may be used
+/// to delete records of files that disappeared.
+struct WalkResult {
+    seen: HashSet<String>,
+    complete: bool,
+}
+
 pub async fn run(
     state: AppState,
     job: Arc<Job>,
@@ -40,15 +50,14 @@ pub async fn run(
     traverse: bool,
 ) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel::<PathBuf>(256);
+    let target = Arc::new(target);
 
     let walker = {
-        let job = job.clone();
-        let start = target.path.clone();
-        tokio::task::spawn_blocking(move || walk(&start, traverse, &job, tx))
+        let (job, target) = (job.clone(), target.clone());
+        tokio::task::spawn_blocking(move || walk(&target, traverse, &job, tx))
     };
 
     let rx = Arc::new(Mutex::new(rx));
-    let target = Arc::new(target);
     let mut workers = JoinSet::new();
     for _ in 0..state.config.staging.index_workers {
         let (state, job, rx, target) = (state.clone(), job.clone(), rx.clone(), target.clone());
@@ -69,17 +78,37 @@ pub async fn run(
     }
     drop(rx);
 
-    walker.await.context("walker panicked")?;
+    let walked = walker.await.context("walker panicked")?;
     while let Some(res) = workers.join_next().await {
         res.context("index worker panicked")?;
+    }
+
+    if walked.complete && !job.is_cancelled() && target.path.is_dir() {
+        let scope = target
+            .relative(&target.path)
+            .and_then(|p| p.to_str().map(str::to_string))
+            .context("index path is not valid UTF-8")?;
+        let root = target.root_name.clone();
+        let removed = state
+            .db
+            .call(move |c| models::delete_unseen(c, &root, &scope, traverse, &walked.seen))
+            .await?;
+        if removed > 0 {
+            tracing::info!(removed, "removed records of files no longer present");
+        }
+        job.add_removed(removed as u64);
     }
     crate::db::fts::rebuild(&state.db).await;
     Ok(())
 }
 
 /// Walks the tree without following symlinks and skips hidden entries.
-fn walk(start: &Path, traverse: bool, job: &Job, tx: mpsc::Sender<PathBuf>) {
-    let mut walker = WalkDir::new(start).follow_links(false);
+fn walk(target: &ResolvedPath, traverse: bool, job: &Job, tx: mpsc::Sender<PathBuf>) -> WalkResult {
+    let mut result = WalkResult {
+        seen: HashSet::new(),
+        complete: true,
+    };
+    let mut walker = WalkDir::new(&target.path).follow_links(false);
     if !traverse {
         walker = walker.max_depth(1);
     }
@@ -88,11 +117,13 @@ fn walk(start: &Path, traverse: bool, job: &Job, tx: mpsc::Sender<PathBuf>) {
         .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'));
     for entry in entries {
         if job.is_cancelled() {
+            result.complete = false;
             break;
         }
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
+                result.complete = false;
                 let path = e
                     .path()
                     .map(|p| p.display().to_string())
@@ -104,11 +135,19 @@ fn walk(start: &Path, traverse: bool, job: &Job, tx: mpsc::Sender<PathBuf>) {
         if !entry.file_type().is_file() || detect::detect(entry.path()).is_none() {
             continue;
         }
+        if let Some(rel) = target
+            .relative(entry.path())
+            .and_then(|p| p.to_str().map(str::to_string))
+        {
+            result.seen.insert(rel);
+        }
         job.inc_found();
         if tx.blocking_send(entry.into_path()).is_err() {
+            result.complete = false;
             break;
         }
     }
+    result
 }
 
 async fn process_file(
@@ -135,7 +174,12 @@ async fn process_file(
         .db
         .call(move |c| models::find_stat(c, &root, &rel))
         .await?;
-    if existing.is_some_and(|s| s.size_bytes == size && s.mtime == mtime) {
+    // Fast path: same size and mtime means unchanged, without reading the file
+    // (re-reading a large share on every run would be far too slow over SMB).
+    if existing
+        .as_ref()
+        .is_some_and(|s| s.size_bytes == size && s.mtime == mtime)
+    {
         return Ok(Outcome::Unchanged);
     }
 
@@ -163,21 +207,44 @@ async fn process_file(
         return Ok(Outcome::TooLarge);
     }
 
-    let staged = if cfg.copy_on_index {
+    let (staged, sha) = if cfg.copy_on_index {
         let (staged, sha) = state.staging.copy_in(path, size).await?;
-        rec.sha256 = Some(sha);
-        Some(staged)
+        (Some(staged), sha)
     } else {
-        None
+        (None, Staging::hash_file(path).await?)
     };
-    let work_path = staged.as_ref().map_or(path, |s| s.path()).to_path_buf();
+    rec.sha256 = Some(sha.clone());
 
+    if let Some(old) = existing {
+        if old.sha256.as_deref() == Some(sha.as_str()) {
+            // Only stat data changed (e.g. touched): keep metadata and LLM results.
+            state
+                .db
+                .call(move |c| models::touch_unchanged(c, &old.id, &rec))
+                .await?;
+            return Ok(Outcome::Unchanged);
+        }
+        // New content: drop the old record now, so a failed extraction leaves no stale data.
+        state
+            .db
+            .call(move |c| models::delete_file(c, &old.id))
+            .await?;
+    }
+
+    let work_path = staged.as_ref().map_or(path, |s| s.path()).to_path_buf();
     rec.mime = {
         let p = work_path.clone();
         tokio::task::spawn_blocking(move || detect::sniff_mime(&p, detected)).await?
     };
     let details = extract_details(&work_path, detected, rec.mime.clone()).await?;
-    save(state, rec, details, SummaryStatus::Pending).await?;
+    let id = save(state, rec, details, SummaryStatus::Pending).await?;
+    let reused = state
+        .db
+        .call(move |c| models::reuse_analysis(c, &id, &sha))
+        .await?;
+    if reused {
+        tracing::debug!(path = %path.display(), "reused LLM results of identical content");
+    }
     Ok(Outcome::Indexed)
 }
 
@@ -207,12 +274,11 @@ async fn save(
     rec: FileRecord,
     details: Details,
     status: SummaryStatus,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     state
         .db
         .call(move |c| models::save_indexed(c, &rec, &details, status))
-        .await?;
-    Ok(())
+        .await
 }
 
 /// Modification time truncated to microseconds, the precision DuckDB stores.

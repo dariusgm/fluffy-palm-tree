@@ -93,6 +93,9 @@ ALTER TABLE jobs ADD COLUMN recent_errors JSON;
     r#"
 ALTER TABLE analyses ADD COLUMN ts_secs DOUBLE;
 "#,
+    r#"
+ALTER TABLE jobs ADD COLUMN removed BIGINT DEFAULT 0;
+"#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {

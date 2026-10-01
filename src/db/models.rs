@@ -140,7 +140,19 @@ pub struct StoredStat {
     pub id: String,
     pub size_bytes: u64,
     pub mtime: Option<DateTime<Utc>>,
+    pub sha256: Option<String>,
 }
+
+/// Tables holding rows that belong to a file. All of them are cleared when the file's
+/// record is removed, so the database only describes the current content.
+const FILE_CHILD_TABLES: &[&str] = &[
+    "images",
+    "documents",
+    "videos",
+    "video_frames",
+    "analyses",
+    "tags",
+];
 
 /// Renders permission bits like `ls -l`, e.g. `rw-r--r--`.
 pub fn mode_string(mode: u32) -> String {
@@ -161,13 +173,14 @@ pub fn find_stat(
 ) -> anyhow::Result<Option<StoredStat>> {
     let row = conn
         .query_row(
-            "SELECT id, size_bytes, mtime FROM files WHERE root = ? AND rel_path = ?",
+            "SELECT id, size_bytes, mtime, sha256 FROM files WHERE root = ? AND rel_path = ?",
             params![root, rel_path],
             |r| {
                 Ok(StoredStat {
                     id: r.get(0)?,
                     size_bytes: r.get::<_, i64>(1)? as u64,
                     mtime: r.get(2)?,
+                    sha256: r.get(3)?,
                 })
             },
         )
@@ -175,40 +188,128 @@ pub fn find_stat(
     Ok(row)
 }
 
-/// Inserts or updates a file and its type-specific metadata in one transaction.
-/// Re-indexing a changed file resets its summary, since the content may differ.
+/// Removes a file and everything derived from it (metadata, frames, LLM history, tags).
+pub fn delete_file(conn: &mut Connection, id: &str) -> anyhow::Result<()> {
+    let tx = conn.transaction()?;
+    for table in FILE_CHILD_TABLES {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE file_id = ?"),
+            params![id],
+        )?;
+    }
+    tx.execute("DELETE FROM files WHERE id = ?", params![id])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Same content (hash) but new stat data, e.g. after a `touch` or a copy that kept the
+/// bytes: refresh the stat columns and keep metadata and LLM results.
+pub fn touch_unchanged(conn: &Connection, id: &str, rec: &FileRecord) -> anyhow::Result<()> {
+    conn.execute(
+        r#"UPDATE files SET size_bytes = ?, mode = ?, mode_str = ?, uid = ?, gid = ?,
+                  mtime = ?, sha256 = ?, indexed_at = ?
+           WHERE id = ?"#,
+        params![
+            rec.size_bytes as i64,
+            rec.mode,
+            mode_string(rec.mode),
+            rec.uid,
+            rec.gid,
+            rec.mtime,
+            rec.sha256,
+            Utc::now(),
+            id
+        ],
+    )?;
+    Ok(())
+}
+
+/// Copies the LLM summary and frame descriptions from another file with identical
+/// content (duplicate or moved file), so it does not need another LLM run.
+/// Returns true if something was reused.
+pub fn reuse_analysis(conn: &mut Connection, id: &str, sha256: &str) -> anyhow::Result<bool> {
+    let donor: Option<(String, String)> = conn
+        .query_row(
+            r#"SELECT id, summary FROM files
+               WHERE sha256 = ? AND id <> ? AND summary_status = 'done'
+               ORDER BY indexed_at DESC LIMIT 1"#,
+            params![sha256, id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((donor_id, summary)) = donor else {
+        return Ok(false);
+    };
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE files SET summary = ?, summary_status = 'done' WHERE id = ?",
+        params![summary, id],
+    )?;
+    tx.execute("DELETE FROM video_frames WHERE file_id = ?", params![id])?;
+    tx.execute(
+        r#"INSERT INTO video_frames (file_id, ts_secs, description)
+           SELECT ?, ts_secs, description FROM video_frames WHERE file_id = ?"#,
+        params![id, donor_id],
+    )?;
+    tx.commit()?;
+    Ok(true)
+}
+
+/// Deletes records inside an indexed directory scope whose files were not seen during
+/// the walk (deleted or moved at the source). `scope` is the directory relative to the
+/// root ("" for the root itself); with `recursive = false` only direct children count.
+pub fn delete_unseen(
+    conn: &mut Connection,
+    root: &str,
+    scope: &str,
+    recursive: bool,
+    seen: &std::collections::HashSet<String>,
+) -> anyhow::Result<usize> {
+    let prefix = if scope.is_empty() {
+        String::new()
+    } else {
+        format!("{scope}/")
+    };
+    let candidates: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, rel_path FROM files WHERE root = ? AND starts_with(rel_path, ?)",
+        )?;
+        let rows = stmt.query_map(params![root, prefix], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut removed = 0;
+    for (id, rel) in candidates {
+        let rest = &rel[prefix.len()..];
+        let in_scope = recursive || !rest.contains('/');
+        if in_scope && !seen.contains(&rel) {
+            delete_file(conn, &id)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Stores a file and its type-specific metadata. A record that already exists at the
+/// same path is removed first, including everything derived from it, so the database
+/// only ever describes the file's current content.
 pub fn save_indexed(
     conn: &mut Connection,
     rec: &FileRecord,
     details: &Details,
     status: SummaryStatus,
 ) -> anyhow::Result<String> {
+    if let Some(old) = find_stat(conn, &rec.root, &rec.rel_path)? {
+        delete_file(conn, &old.id)?;
+    }
     let tx = conn.transaction()?;
-    let new_id = uuid::Uuid::new_v4().to_string();
-    let id: String = tx.query_row(
+    let id = uuid::Uuid::new_v4().to_string();
+    tx.execute(
         r#"INSERT INTO files (id, root, rel_path, abs_path, file_name, extension, kind, mime,
                               size_bytes, mode, mode_str, uid, gid, mtime, sha256,
                               summary, summary_status, indexed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
-           ON CONFLICT (root, rel_path) DO UPDATE SET
-               abs_path = excluded.abs_path,
-               file_name = excluded.file_name,
-               extension = excluded.extension,
-               kind = excluded.kind,
-               mime = excluded.mime,
-               size_bytes = excluded.size_bytes,
-               mode = excluded.mode,
-               mode_str = excluded.mode_str,
-               uid = excluded.uid,
-               gid = excluded.gid,
-               mtime = excluded.mtime,
-               sha256 = excluded.sha256,
-               summary = '',
-               summary_status = excluded.summary_status,
-               indexed_at = excluded.indexed_at
-           RETURNING id"#,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)"#,
         params![
-            new_id,
+            id,
             rec.root,
             rec.rel_path,
             rec.abs_path,
@@ -226,15 +327,8 @@ pub fn save_indexed(
             status.as_str(),
             Utc::now(),
         ],
-        |r| r.get(0),
     )?;
 
-    for table in ["images", "documents", "videos", "video_frames"] {
-        tx.execute(
-            &format!("DELETE FROM {table} WHERE file_id = ?"),
-            params![id],
-        )?;
-    }
     match details {
         Details::Image(m) => {
             tx.execute(
@@ -302,38 +396,132 @@ mod tests {
         assert_eq!(mode_string(0o000), "---------");
     }
 
+    fn img(h: u32) -> Details {
+        Details::Image(ImageMeta {
+            format: Some("png".into()),
+            width: Some(10),
+            height: Some(h),
+        })
+    }
+
+    fn count(c: &Connection, sql: &str) -> i64 {
+        c.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
     #[tokio::test]
-    async fn upsert_keeps_id_and_replaces_details() {
+    async fn changed_content_replaces_record_and_derived_rows() {
         let db = Db::open_in_memory().unwrap();
-        let (id1, id2, stat, height, count) = db
-            .call(|c| {
-                let img = |h| {
-                    Details::Image(ImageMeta {
-                        format: Some("png".into()),
-                        width: Some(10),
-                        height: Some(h),
-                    })
-                };
-                let id1 = save_indexed(c, &record(10), &img(20), SummaryStatus::Pending)?;
-                c.execute(
-                    "UPDATE files SET summary = 'old', summary_status = 'done'",
-                    [],
-                )?;
-                let id2 = save_indexed(c, &record(99), &img(30), SummaryStatus::Pending)?;
-                let stat = find_stat(c, "r", "a/b.png")?.unwrap();
-                let height: u32 = c.query_row("SELECT height FROM images", [], |r| r.get(0))?;
-                let count: i64 =
-                    c.query_row("SELECT count(*) FROM files WHERE summary = ''", [], |r| {
-                        r.get(0)
-                    })?;
-                Ok((id1, id2, stat, height, count))
-            })
+        db.call(|c| {
+            let id1 = save_indexed(c, &record(10), &img(20), SummaryStatus::Pending)?;
+            c.execute_batch(&format!(
+                "UPDATE files SET summary = 'old', summary_status = 'done';
+                 INSERT INTO video_frames VALUES ('{id1}', 0, 'old frame');
+                 INSERT INTO tags VALUES ('{id1}', 'old', 'manual');
+                 INSERT INTO analyses (id, file_id, created_at) VALUES ('a1', '{id1}', now());"
+            ))?;
+            let id2 = save_indexed(c, &record(99), &img(30), SummaryStatus::Pending)?;
+            assert_ne!(id1, id2, "a new record replaces the old one");
+            let stat = find_stat(c, "r", "a/b.png")?.unwrap();
+            assert_eq!(stat.id, id2);
+            assert_eq!(stat.size_bytes, 99);
+            assert_eq!(count(c, "SELECT count(*) FROM files"), 1);
+            assert_eq!(count(c, "SELECT count(*) FROM files WHERE summary = ''"), 1);
+            assert_eq!(count(c, "SELECT count(*) FROM images"), 1);
+            assert_eq!(count(c, "SELECT height FROM images"), 30);
+            for t in ["video_frames", "tags", "analyses"] {
+                assert_eq!(count(c, &format!("SELECT count(*) FROM {t}")), 0, "{t}");
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn touch_keeps_results_and_reuse_copies_them() {
+        let db = Db::open_in_memory().unwrap();
+        db.call(|c| {
+            let mut rec = record(10);
+            rec.sha256 = Some("abc".into());
+            let id1 = save_indexed(c, &rec, &img(20), SummaryStatus::Pending)?;
+            c.execute_batch(&format!(
+                "UPDATE files SET summary = 'a red square', summary_status = 'done';
+                 INSERT INTO video_frames VALUES ('{id1}', 5, 'frame text');"
+            ))?;
+
+            rec.mtime = None;
+            touch_unchanged(c, &id1, &rec)?;
+            assert_eq!(find_stat(c, "r", "a/b.png")?.unwrap().mtime, None);
+            assert_eq!(count(c, "SELECT count(*) FROM files WHERE summary = 'a red square'"), 1);
+
+            let mut copy = rec.clone();
+            copy.rel_path = "copy.png".into();
+            let id2 = save_indexed(c, &copy, &img(20), SummaryStatus::Pending)?;
+            assert!(reuse_analysis(c, &id2, "abc")?);
+            assert_eq!(
+                count(c, "SELECT count(*) FROM files WHERE summary = 'a red square' AND summary_status = 'done'"),
+                2
+            );
+            assert_eq!(count(c, "SELECT count(*) FROM video_frames"), 2);
+            assert!(!reuse_analysis(c, &id2, "other-hash")?);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_unseen_respects_scope() {
+        let db = Db::open_in_memory().unwrap();
+        db.call(|c| {
+            for rel in [
+                "top.png",
+                "dir/a.png",
+                "dir/b.png",
+                "dir/sub/c.png",
+                "dirx/d.png",
+            ] {
+                let mut r = record(1);
+                r.rel_path = rel.into();
+                save_indexed(c, &r, &img(1), SummaryStatus::Pending)?;
+            }
+            let seen = |v: &[&str]| v.iter().map(|s| s.to_string()).collect();
+            // non-recursive in "dir": only direct children are candidates
+            assert_eq!(
+                delete_unseen(c, "r", "dir", false, &seen(&["dir/a.png"]))?,
+                1
+            );
+            assert!(find_stat(c, "r", "dir/b.png")?.is_none());
+            assert!(find_stat(c, "r", "dir/sub/c.png")?.is_some());
+            assert!(
+                find_stat(c, "r", "dirx/d.png")?.is_some(),
+                "sibling prefix untouched"
+            );
+            // recursive from the root
+            assert_eq!(delete_unseen(c, "r", "", true, &seen(&["top.png"]))?, 3);
+            assert_eq!(count(c, "SELECT count(*) FROM files"), 1);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn database_file_survives_reopen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nested/search.duckdb");
+        {
+            let db = Db::open(&path).unwrap();
+            db.call(|c| save_indexed(c, &record(7), &img(1), SummaryStatus::Pending))
+                .await
+                .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let stat = db
+            .call(|c| find_stat(c, "r", "a/b.png"))
             .await
-            .unwrap();
-        assert_eq!(id1, id2);
-        assert_eq!(stat.size_bytes, 99);
-        assert_eq!(stat.mtime, record(0).mtime);
-        assert_eq!(height, 30);
-        assert_eq!(count, 1, "summary is reset on re-index");
+            .unwrap()
+            .expect("record persisted");
+        assert_eq!(stat.size_bytes, 7);
     }
 }

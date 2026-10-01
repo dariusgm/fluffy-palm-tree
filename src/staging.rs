@@ -108,6 +108,23 @@ impl Staging {
         Ok((staged, hex::encode(hasher.finalize())))
     }
 
+    /// SHA-256 of a file without copying it (used when `copy_on_index` is off).
+    pub async fn hash_file(path: &Path) -> anyhow::Result<String> {
+        let mut reader = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("opening {}", path.display()))?;
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; 1024 * 1024];
+        loop {
+            let n = reader.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        Ok(hex::encode(hasher.finalize()))
+    }
+
     pub fn temp_dir(&self) -> anyhow::Result<StagedDir> {
         let path = self
             .dir

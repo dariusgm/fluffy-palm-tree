@@ -58,6 +58,20 @@ client ──► axum (private-network allowlist)
 `traverse` defaults to `true`. If it is `false`, only the files directly inside `path`
 are indexed. The response is `202` with `{ "job_id": "...", "status_url": "/jobs/..." }`.
 
+Re-indexing keeps the database at the current state of the source:
+
+| Situation | Result |
+|---|---|
+| Same size and modification time | skipped without reading the file |
+| Stat changed, same SHA-256 (e.g. touched) | stat columns updated; metadata and LLM results kept |
+| Same path, different SHA-256 | old record and everything derived from it (metadata, frames, LLM history, tags) deleted, new record created |
+| New file with the same SHA-256 as an analysed file (copy or move) | LLM summary and frame descriptions reused, no new LLM run |
+| Record whose file no longer exists | deleted (`removed` counter), only for the indexed folder (direct children if `traverse` is `false`) and only if the walk completed without errors and was not cancelled |
+
+The hash is computed for every indexed file, while copying it to staging or by
+reading it in place when `staging.copy_on_index = false`. Files above
+`staging.max_file_bytes` are recorded without a hash.
+
 ### `POST /import_media`
 
 ```json
@@ -124,12 +138,13 @@ so image and video analysis will fail.
 
 ```json
 { "id": "...", "kind": "index", "status": "running", "params": { "path": "...", "traverse": true },
-  "found": 1200, "processed": 850, "failed": 2, "skipped": 300,
+  "found": 1200, "processed": 850, "failed": 2, "skipped": 300, "removed": 4,
   "started_at": "...", "finished_at": null, "error": null,
   "recent_errors": [ { "path": "/mnt/share/x/broken.png", "error": "..." } ] }
 ```
 - `status` is one of `running | completed | failed | cancelled | interrupted`.
-- `skipped` counts unchanged files and files above `staging.max_file_bytes`.
+- `skipped` counts unchanged files and files above `staging.max_file_bytes`; `removed`
+  counts records deleted because their file no longer exists.
 - `GET /jobs` lists the last 100 jobs. `DELETE /jobs/{id}` cancels a running job
   (`202`), or returns `409` if the job has already finished.
 
@@ -187,6 +202,9 @@ tests/           integration tests
   service only sees local paths, and files are identified by `(root name, relative path)`.
 - Video and PDF tooling are system binaries (`ffprobe`, `ffmpeg`, `pdftotext`),
   always called with argument vectors, never through a shell.
+- All state (files, metadata, LLM results, jobs) lives in the DuckDB file at
+  `database.path` (default `./data/search.duckdb`) and survives restarts. Back up that
+  file to keep the LLM results. Keep it on a persistent disk, not in `/tmp`.
 - DuckDB is accessed through one mutex-protected connection on the blocking thread
   pool (DuckDB has a single writer). Schema changes are append-only migrations in
   `src/db/schema.rs`.
@@ -220,13 +238,13 @@ tests/           integration tests
 - Document summaries through the LLM (`/import_media` with `kind: ["document"]`,
   chunking long documents)
 - Office documents (docx/xlsx/pptx)
+- OCR for scanned PDFs (no text layer), e.g. render pages and send them to the vision model
 - `people_count` as a search filter, since a text query like "person" misses many images
 - Tagging API (`POST /files/{id}/tags`, `DELETE /files/{id}/tags/{tag}`); `tag` is
   already a search field
 - Person search beyond descriptions: face detection and embeddings (e.g. ONNX model plus
   DuckDB `vss`), clustered into named persons through tags
 - HEIC/RAW images, EXIF metadata (capture date, camera; GPS optional)
-- Mark files deleted at the source during re-index
 - Re-derive `files.summary` from stored `analyses.parsed` when the flattening changes
 - Configurable FTS language (e.g. German), periodic FTS rebuilds during long jobs
 - Optional API token in addition to the IP allowlist; systemd unit file

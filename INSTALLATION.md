@@ -68,11 +68,24 @@ sudo mkdir -p /mnt/share/NAME
 sudo mount -a
 ```
 
+Alternatively, a share opened in the GNOME file manager (`smb://host/share`) is
+available as a GVFS FUSE path and can be used directly as a root:
+
+```toml
+[[roots]]
+name = "nas"
+path = "/run/user/1000/gvfs/smb-share:server=HOST,share=SHARE"
+```
+
+This works for testing, but the mount only exists while the user's desktop session is
+logged in, so use CIFS for a permanently running service.
+
 Notes:
 - `ro` guarantees the service can never modify the source data.
 - On CIFS mounts, the stored unix permissions are the ones the mount reports
   (`file_mode`/`dir_mode`, or the server's unix extensions if enabled), not
-  necessarily the real ACLs on the NAS.
+  necessarily the real ACLs on the NAS. GVFS reports the same permissions for all
+  files (e.g. `0700`).
 
 ## 4. Configure
 
