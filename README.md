@@ -126,6 +126,16 @@ For each item, the job:
    as searchable text. Every LLM call is recorded (model, prompt version, raw output,
    latency, tokens, errors) in the `analyses` table for quality comparison.
 
+Near-duplicate images: `/index` stores a 64-bit perceptual hash (dHash) per image. With
+`llm.phash_reuse_distance = N` (default 0 = off), an image whose hash differs in at most
+N bits from an already described image copies that image's description and OCR text
+instead of calling the LLM (counted as `skipped` in the job; `files.reused_from` names the
+donor). Only really analysed images are donors, so there are no chains, and a `force` run
+never reuses. On a 35,657-image photo share, `scripts/phash_clusters.py` measured these
+shares of images that would be skipped: N=4: 17%, 6: 20%, 8: 23%, 10: 30%, 12: 44%,
+16: 82% (the higher, the more merely similar pictures are matched); about half of the
+matches at N=10 are in a different folder than the donor.
+
 `ocr_images`: `auto` (default) transcribes an image only if its description reported
 visible text, which saves a ~45 s call per photo without text. `always` transcribes
 every image, `never` none. `ocr_status` per file is `done`, `none` (no text found),
@@ -216,6 +226,18 @@ close but not exact; for example, extensionless text files and zip-based formats
 as `.sh3d` are only recognised by the service. Measured averages on the reference
 hardware: about 45–50 s per image or video-frame call, 26 s per text/code summary.
 
+## Measuring near-duplicates
+
+`scripts/phash_clusters.py` (Pillow and numpy, in a uv environment) hashes all images of a
+share and reports how many would be skipped at each Hamming distance, to choose
+`llm.phash_reuse_distance` for your data. It is not part of the service.
+
+```bash
+uv venv .venv && uv pip install -r scripts/requirements.txt
+.venv/bin/python scripts/phash_clusters.py scan /mnt/share --cache hashes.jsonl
+.venv/bin/python scripts/phash_clusters.py report --cache hashes.jsonl --sec-per-call 35
+```
+
 ## Development
 
 Every step must pass these checks before it is committed:
@@ -291,12 +313,12 @@ scripts/         helper scripts (work estimate for a share)
   in the test set.
 - `image_max_edge = 1024` keeps name tags and UI text readable. Lowering it saves
   little, because image tokens are not the bottleneck.
-- Parallel requests (`llama-server --parallel 2`, `llm.workers = 2`) gave about 20% more
-  total throughput in a warm-cache benchmark (17 images: 558 s vs 667 s), while each request
-  took longer (64 s vs 39 s). Prompt processing and image encoding are a large part of each
-  call and do not benefit, so more slots are unlikely to help much on this hardware.
-  `--parallel N` splits `-c` across slots; raise `-c` accordingly (e.g. `-c 65536` for
-  2 x 32k).
+- Parallel requests (`llama-server --parallel N`, `llm.workers = N`) gain little on this
+  hardware: 17 new images took 981 s with 1 worker, 814 s with 2 (+20%) and 872 s with 4.
+  (Benchmarks that resend the same images look much faster because llama.cpp caches the
+  prompt and image; use unseen images.) A single slot with a large context (`-c 180224`)
+  is the simplest setup and leaves room for other uses of the server.
+  `--parallel N` splits `-c` across slots.
 - llama-server must run with a vision projector (`--mmproj ...` or `-hf ... --mmproj-auto`).
   `GET /health/llm` reports `vision: false` otherwise.
 

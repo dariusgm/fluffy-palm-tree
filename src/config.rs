@@ -59,6 +59,12 @@ pub struct LlmConfig {
     #[serde(default = "default_one")]
     pub workers: usize,
     pub image_max_edge: u32,
+    /// Images whose perceptual hash differs in at most this many of 64 bits from an already
+    /// described image reuse its description and OCR text instead of another LLM call.
+    /// 0 disables the reuse; 8-10 skips most near-duplicates at a growing risk of
+    /// matching merely similar pictures.
+    #[serde(default)]
+    pub phash_reuse_distance: u32,
     pub video_frame_interval_secs: u32,
     pub video_max_frames: u32,
     /// When images get a separate text-recognition (OCR) call.

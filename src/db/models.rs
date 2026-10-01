@@ -118,13 +118,15 @@ pub struct StatFields {
 
 /// Bump when new per-file metadata is extracted, so re-indexing fills it in for
 /// files that are otherwise unchanged (without touching their LLM results).
-pub const META_VERSION: i32 = 5;
+pub const META_VERSION: i32 = 6;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ImageMeta {
     pub format: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// 64-bit perceptual hash (see `extract::image::dhash`), stored as a signed integer.
+    pub phash: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -300,6 +302,18 @@ pub fn replace_archive(conn: &mut Connection, id: &str, m: &ArchiveMeta) -> anyh
     Ok(())
 }
 
+/// Replaces only the image metadata of an existing record (keeps id and description).
+pub fn replace_image(conn: &mut Connection, id: &str, m: &ImageMeta) -> anyhow::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM images WHERE file_id = ?", params![id])?;
+    tx.execute(
+        "INSERT INTO images (file_id, format, width, height, phash) VALUES (?, ?, ?, ?, ?)",
+        params![id, m.format, m.width, m.height, m.phash.map(|h| h as i64)],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Replaces only the document metadata of an existing record (keeps id, summary, tags).
 pub fn replace_document(conn: &mut Connection, id: &str, m: &DocumentMeta) -> anyhow::Result<()> {
     let tx = conn.transaction()?;
@@ -438,8 +452,8 @@ pub fn save_indexed(
     match details {
         Details::Image(m) => {
             tx.execute(
-                "INSERT INTO images (file_id, format, width, height) VALUES (?, ?, ?, ?)",
-                params![id, m.format, m.width, m.height],
+                "INSERT INTO images (file_id, format, width, height, phash) VALUES (?, ?, ?, ?, ?)",
+                params![id, m.format, m.width, m.height, m.phash.map(|h| h as i64)],
             )?;
         }
         Details::Document(m) => {
@@ -523,6 +537,7 @@ mod tests {
             format: Some("png".into()),
             width: Some(10),
             height: Some(h),
+            phash: None,
         })
     }
 

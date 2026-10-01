@@ -35,6 +35,9 @@ model = "your-model-name"
 timeout_secs = 600
 workers = 1
 image_max_edge = 1024
+# Images that look almost identical (perceptual hash, max. differing bits of 64) to an
+# already described image reuse its description instead of another LLM call. 0 = off.
+phash_reuse_distance = 0
 # One frame per interval; the first and last frame of a video are always included.
 video_frame_interval_secs = 60
 video_max_frames = 120

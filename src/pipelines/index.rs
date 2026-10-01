@@ -326,16 +326,21 @@ enum Refreshed {
     Reclassified,
 }
 
-/// Unchanged file from an older index version. Images and videos keep everything
-/// (their LLM results are expensive); documents and archives are re-classified and
-/// their metadata re-extracted, which picks up new fields and detection fixes.
+/// Unchanged file from an older index version. Videos keep everything (their LLM results
+/// are expensive); images get their metadata (e.g. the perceptual hash) re-extracted
+/// without touching the description; documents and archives are re-classified and their
+/// metadata re-extracted, which picks up new fields and detection fixes.
 async fn refresh_derived(
     state: &AppState,
     old: &models::StoredStat,
     path: &Path,
     size: u64,
 ) -> anyhow::Result<Refreshed> {
-    let refreshable = [FileKind::Document.as_str(), FileKind::Archive.as_str()];
+    let refreshable = [
+        FileKind::Image.as_str(),
+        FileKind::Document.as_str(),
+        FileKind::Archive.as_str(),
+    ];
     if !refreshable.contains(&old.kind.as_str()) {
         return Ok(Refreshed::Kept);
     }
@@ -365,11 +370,20 @@ async fn refresh_derived(
         }
         _ => {
             let (staged, _sha) = state.staging.copy_in(path, size).await?;
-            if let Details::Document(meta) = extract_details(staged.path(), &detected).await? {
-                state
-                    .db
-                    .call(move |c| models::replace_document(c, &id, &meta))
-                    .await?;
+            match extract_details(staged.path(), &detected).await? {
+                Details::Document(meta) => {
+                    state
+                        .db
+                        .call(move |c| models::replace_document(c, &id, &meta))
+                        .await?;
+                }
+                Details::Image(meta) => {
+                    state
+                        .db
+                        .call(move |c| models::replace_image(c, &id, &meta))
+                        .await?;
+                }
+                _ => {}
             }
         }
     }

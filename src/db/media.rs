@@ -113,6 +113,46 @@ pub fn select_candidates(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// Gives an image the description (and text recognition result) of an already analysed
+/// image whose perceptual hash differs in at most `max_distance` bits, so it needs no LLM
+/// call. Only really analysed images are donors (no chains of copies). Returns the donor id.
+pub fn reuse_by_phash(
+    conn: &mut Connection,
+    id: &str,
+    max_distance: u32,
+) -> anyhow::Result<Option<String>> {
+    // An all-zero hash is a flat or featureless picture and matches too much.
+    let donor: Option<(String, String, Option<String>)> = conn
+        .query_row(
+            r#"SELECT f.id, f.summary, f.ocr_status
+               FROM images me, images i JOIN files f ON f.id = i.file_id
+               WHERE me.file_id = ? AND me.phash IS NOT NULL AND me.phash <> 0
+                 AND i.phash IS NOT NULL AND f.id <> me.file_id
+                 AND f.summary_status = 'done' AND f.reused_from IS NULL
+                 AND f.ocr_status IS NOT NULL
+                 AND bit_count(xor(i.phash, me.phash)) <= ?
+               ORDER BY bit_count(xor(i.phash, me.phash)), f.indexed_at DESC LIMIT 1"#,
+            params![id, max_distance],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((donor_id, summary, ocr_status)) = donor else {
+        return Ok(None);
+    };
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE files SET summary = ?, summary_status = 'done', ocr_status = ?, reused_from = ? WHERE id = ?",
+        params![summary, ocr_status, donor_id, id],
+    )?;
+    tx.execute("DELETE FROM ocr WHERE file_id = ?", params![id])?;
+    tx.execute(
+        "INSERT INTO ocr (file_id, page, text) SELECT ?, page, text FROM ocr WHERE file_id = ?",
+        params![id, donor_id],
+    )?;
+    tx.commit()?;
+    Ok(Some(donor_id))
+}
+
 /// Extracted text of a document together with what the summary prompt needs.
 pub struct DocumentText {
     pub file_name: String,

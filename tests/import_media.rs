@@ -301,3 +301,62 @@ async fn short_video_gets_first_and_last_frame() {
     let frames = import_video(&env, 5).await;
     assert_eq!(frames, vec![0.0, 5.0]);
 }
+
+/// A smooth pattern with ups and downs in both directions (a plain gradient would hash to
+/// all zeros, which is never reused). `freq` selects a different picture.
+fn write_pattern(path: &std::path::Path, w: u32, h: u32, freq: f32) {
+    image::GrayImage::from_fn(w, h, |x, y| {
+        let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+        let v = 127.0
+            + 120.0 * (fx * freq * std::f32::consts::TAU + fy * 3.0).sin() * (fy * 5.0 + 1.0).cos();
+        image::Luma([v as u8])
+    })
+    .save(path)
+    .unwrap();
+}
+
+#[tokio::test]
+async fn similar_images_reuse_the_description_of_an_analysed_one() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(completion(ANSWER))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let env = TestEnv::with_config(move |c| {
+        c.llm.base_url = uri;
+        c.llm.model = "test-model".into();
+        c.llm.timeout_secs = 5;
+        c.llm.ocr_images = media_search::config::OcrMode::Never;
+        c.llm.phash_reuse_distance = 8;
+    });
+    write_pattern(&env.root.join("a.png"), 200, 150, 3.0);
+    write_pattern(&env.root.join("b_smaller_copy.png"), 100, 75, 3.0);
+    write_pattern(&env.root.join("c_different.png"), 200, 150, 7.0);
+    run_job(&env, "/index", json!({ "path": env.root })).await;
+
+    let job = run_job(&env, "/import_media", json!({})).await;
+    assert_eq!(job["status"], "completed", "{job}");
+    assert_eq!(
+        (
+            job["found"].as_u64(),
+            job["processed"].as_u64(),
+            job["skipped"].as_u64()
+        ),
+        (Some(3), Some(2), Some(1)),
+        "{job}"
+    );
+    let rows = query(
+        &env,
+        "SELECT f.file_name, f.summary_status, CAST(f.summary = d.summary AS VARCHAR), d.file_name
+         FROM files f LEFT JOIN files d ON d.id = f.reused_from ORDER BY f.file_name",
+    )
+    .await;
+    assert_eq!(rows[0], vec!["a.png", "done", "", ""]);
+    assert_eq!(rows[1][0], "b_smaller_copy.png");
+    assert_eq!(rows[1][1..], ["done", "true", "a.png"]);
+    assert_eq!(rows[2], vec!["c_different.png", "done", "", ""]);
+}

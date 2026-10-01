@@ -70,12 +70,19 @@ enum OcrResult {
 }
 
 pub async fn run(state: AppState, job: Arc<Job>, filter: CandidateFilter) -> anyhow::Result<()> {
+    let force = filter.force;
     let candidates = state
         .db
         .call(move |c| media::select_candidates(c, &filter))
         .await?;
     job.add_found(candidates.len() as u64);
 
+    // A forced run exists to redo the analysis, so nothing is reused then.
+    let reuse_distance = if force {
+        0
+    } else {
+        state.config.llm.phash_reuse_distance
+    };
     let queue = Arc::new(Mutex::new(VecDeque::from(candidates)));
     let mut workers = JoinSet::new();
     for _ in 0..state.config.llm.workers {
@@ -87,7 +94,7 @@ pub async fn run(state: AppState, job: Arc<Job>, filter: CandidateFilter) -> any
                 }
                 let next = queue.lock().expect("queue lock").pop_front();
                 let Some(item) = next else { break };
-                process(&state, &job, item).await;
+                process(&state, &job, item, reuse_distance).await;
             }
         });
     }
@@ -98,7 +105,26 @@ pub async fn run(state: AppState, job: Arc<Job>, filter: CandidateFilter) -> any
     Ok(())
 }
 
-async fn process(state: &AppState, job: &Job, item: MediaCandidate) {
+async fn process(state: &AppState, job: &Job, item: MediaCandidate, reuse_distance: u32) {
+    if item.kind == FileKind::Image && item.describe && reuse_distance > 0 {
+        let id = item.id.clone();
+        match state
+            .db
+            .call(move |c| media::reuse_by_phash(c, &id, reuse_distance))
+            .await
+        {
+            Ok(Some(donor)) => {
+                tracing::debug!(file = %item.abs_path, donor, "reused description of a similar image");
+                job.inc_skipped();
+                return;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                job.record_failure(item.abs_path.clone(), &e);
+                return;
+            }
+        }
+    }
     if item.describe
         && let Err(e) = update_status(state, &item.id, SummaryStatus::Running).await
     {

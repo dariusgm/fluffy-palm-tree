@@ -118,6 +118,10 @@ CREATE TABLE ocr (
     PRIMARY KEY (file_id, page)
 );
 "#,
+    r#"
+ALTER TABLE images ADD COLUMN phash BIGINT;
+ALTER TABLE files ADD COLUMN reused_from TEXT;
+"#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {
