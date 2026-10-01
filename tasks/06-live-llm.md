@@ -15,7 +15,8 @@ Verify the real llama.cpp setup and evaluate extraction quality on a small sampl
 - [x] Run `/import_media` and record the timing per image and per frame (`analyses.latency_ms`)
 - [x] Review the quality: are people described consistently enough for later person search?
 - [x] Tune the prompts and bump `IMAGE_PROMPT_VERSION` / `VIDEO_MERGE_PROMPT_VERSION` in `src/llm/prompts.rs`, then compare runs in the `analyses` table
-- [ ] Decide whether the frame interval (10 s) and `image_max_edge` (1024) are right for the hardware (see open decisions)
+- [x] Decide the frame interval: 1 frame per 60 s plus the first and last frame (owner decision)
+- [ ] Decide whether `image_max_edge` (1024) is right for the hardware (see open decisions)
 - [x] Write the findings into this file (no real file names or personal data, the repo is public)
 
 ## Useful queries
@@ -98,15 +99,20 @@ Rerun of the 5 problem items (13 calls) in 10 min:
 - the model does not strictly keep `visible_text` under 300 characters (about 900 on a
   code screenshot), but there is no repetition anymore
 
+### Run 3: 1 frame per 60 s plus first and last frame
+The 3 test videos (14–37 s) each got exactly 2 frames: at 0 s and at the end
+(14.0 / 32.4 / 37.0 s), including Theora and VP9. 9 calls (6 frames + 3 merges) took
+6.5 min, all valid JSON. With 10 s sampling the same videos needed 10 frames.
+
 ### Throughput estimate for this hardware
 About 50 s per image and about 55 s per video frame, plus one merge call per video:
 - ~1,700 images per day, running continuously
-- a 10-minute video at 1 frame per 10 s means 60 frames, roughly 1 hour
+- a 10-minute video at 1 frame per 10 s means 60 frames, roughly 1 hour. With the new
+  default (60 s plus first and last frame) it is 11 frames, roughly 10 minutes
 
 ### Open decisions
 - For large photo libraries, consider a faster first pass: shorter output (fewer tags,
   shorter summary) or a smaller vision model, then a detailed pass on demand.
-- Raise `video_frame_interval_secs` (e.g. 30 s) for long videos, or keep 10 s for quality.
 - `image_max_edge = 1024` gives good detail (name tags are readable). Lowering it would
   save prompt tokens, but prompt tokens are not the bottleneck.
 

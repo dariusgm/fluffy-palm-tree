@@ -35,5 +35,6 @@ model = "your-model-name"
 timeout_secs = 600
 workers = 1
 image_max_edge = 1024
-video_frame_interval_secs = 10
+# One frame per interval; the first and last frame of a video are always included.
+video_frame_interval_secs = 60
 video_max_frames = 120

@@ -73,8 +73,9 @@ For each item, the job:
    a configured root);
 2. for images, applies EXIF rotation, downscales to `llm.image_max_edge` and sends a JPEG
    to llama.cpp (`/v1/chat/completions`);
-3. for videos, samples one frame every `llm.video_frame_interval_secs` (widened for long
-   videos so that `video_max_frames` covers the whole duration), describes each frame
+3. for videos, samples the first frame, one frame every `llm.video_frame_interval_secs`
+   (default 60 s, widened for long videos so that `video_max_frames` covers the whole
+   duration) and the last frame (skipped if it is within 2 s of the previous sample), describes each frame
    (stored with its timestamp), then merges the descriptions into one video summary;
 4. stores the summary, including people, objects, scene, visible text and tags, as
    searchable text, and records every LLM call (model, prompt version, raw output,

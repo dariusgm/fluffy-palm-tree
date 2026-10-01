@@ -221,11 +221,10 @@ async fn llm_health() {
     assert_eq!(body["reachable"], false);
 }
 
-#[tokio::test]
-async fn imports_video_frames_when_ffmpeg_installed() {
+async fn video_env(interval_secs: u32) -> Option<(MockServer, TestEnv)> {
     if !media_search::extract::tool_available("ffmpeg") {
         eprintln!("skipping: ffmpeg not installed");
-        return;
+        return None;
     }
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -243,26 +242,55 @@ async fn imports_video_frames_when_ffmpeg_installed() {
         .expect(1)
         .mount(&server)
         .await;
-    let env = env_with_llm(&server).await;
-    assert!(write_video(&env.root.join("clip.mp4"), 22));
-    run_job(&env, "/index", json!({ "path": env.root })).await;
-    let job = run_job(&env, "/import_media", json!({ "kind": ["video"] })).await;
-    assert_eq!(job["processed"], 1, "{job}");
+    let uri = server.uri();
+    let env = TestEnv::with_config(move |c| {
+        c.llm.base_url = uri;
+        c.llm.timeout_secs = 5;
+        c.llm.video_frame_interval_secs = interval_secs;
+    });
+    Some((server, env))
+}
 
-    // 22 s at one frame per 10 s → 0, 10, 20 (fps=1/10 used to drop the frame near the end)
-    let frames = query(
-        &env,
+async fn import_video(env: &TestEnv, secs: u32) -> Vec<f64> {
+    assert!(write_video(&env.root.join("clip.mp4"), secs));
+    run_job(env, "/index", json!({ "path": env.root })).await;
+    let job = run_job(env, "/import_media", json!({ "kind": ["video"] })).await;
+    assert_eq!(job["processed"], 1, "{job}");
+    assert!(env.staging_is_empty());
+    query(
+        env,
         "SELECT CAST(ts_secs AS VARCHAR) FROM video_frames ORDER BY ts_secs",
     )
-    .await;
-    assert_eq!(frames.len(), 3, "{frames:?}");
+    .await
+    .into_iter()
+    .map(|r| r[0].parse().unwrap())
+    .collect()
+}
+
+#[tokio::test]
+async fn video_samples_interval_plus_last_frame() {
+    let Some((_server, env)) = video_env(10).await else {
+        return;
+    };
+    // 0, 10, 20 periodic (fps=1/10 used to drop the 20 s sample) + last frame at 25
+    let frames = import_video(&env, 25).await;
+    assert_eq!(frames, vec![0.0, 10.0, 20.0, 25.0]);
+
     let (_, r) = env
         .call(post_json("/search", json!({ "q": { "text": "bars" } })))
         .await;
     assert_eq!(r["results"][0]["name"], "clip.mp4");
     assert_eq!(
         r["results"][0]["matched_frames"].as_array().unwrap().len(),
-        3
+        4
     );
-    assert!(env.staging_is_empty());
+}
+
+#[tokio::test]
+async fn short_video_gets_first_and_last_frame() {
+    let Some((_server, env)) = video_env(60).await else {
+        return;
+    };
+    let frames = import_video(&env, 5).await;
+    assert_eq!(frames, vec![0.0, 5.0]);
 }

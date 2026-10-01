@@ -158,6 +158,7 @@ async fn analyze_video(
         staged.path(),
         dir.path(),
         interval,
+        item.duration_secs,
         cfg.video_max_frames,
         cfg.image_max_edge,
     )
