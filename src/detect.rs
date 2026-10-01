@@ -45,7 +45,7 @@ pub fn classify(path: &Path, header: &[u8]) -> Option<Detected> {
     if infer::archive::is_pdf(header) {
         return Some(document("application/pdf", DocType::Pdf, None));
     }
-    if let Some(archive) = classify_archive(path, header) {
+    if let Some(archive) = classify_archive(path, header, mime.as_deref()) {
         return Some(Detected {
             kind: FileKind::Archive,
             mime: mime.unwrap_or_else(|| "application/octet-stream".into()),
@@ -116,7 +116,7 @@ fn classify_image_video(header: &[u8], ext: Option<&str>, mime: Option<&str>) ->
     })
 }
 
-fn classify_archive(path: &Path, header: &[u8]) -> Option<ArchiveMeta> {
+fn classify_archive(path: &Path, header: &[u8], mime: Option<&str>) -> Option<ArchiveMeta> {
     use infer::archive as a;
     let compression = if a::is_gz(header) {
         "gzip"
@@ -133,7 +133,9 @@ fn classify_archive(path: &Path, header: &[u8]) -> Option<ArchiveMeta> {
     } else if a::is_z(header) {
         "compress"
     } else if a::is_zip(header) {
-        return Some(archive("zip", "zip"));
+        // Office documents, EPUB, JAR, ... are zip containers with their own type;
+        // only plain zip files are archives.
+        return matches!(mime, None | Some("application/zip")).then(|| archive("zip", "zip"));
     } else if a::is_7z(header) {
         return Some(archive("7z", "7z"));
     } else if a::is_rar(header) {
@@ -335,6 +337,11 @@ mod tests {
         );
         assert_eq!(a("backup.tar.gz", &gzip(b"hello")).format, "tar.gz");
         assert_eq!(a("x.zip", b"PK\x03\x04rest").compression, "zip");
+        // An OpenDocument presentation is a zip container, but not an archive.
+        let mut odp = b"PK\x03\x04".to_vec();
+        odp.extend_from_slice(&[0u8; 26]);
+        odp.extend_from_slice(b"mimetypeapplication/vnd.oasis.opendocument.presentation");
+        assert!(classify(Path::new("talk.odp"), &odp).is_none());
         assert_eq!(a("x.7z", b"7z\xbc\xaf\x27\x1c\0\x04").format, "7z");
         let tar = a("x", &tar_block());
         assert_eq!(

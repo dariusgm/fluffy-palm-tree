@@ -206,18 +206,29 @@ async fn process_file(
         if old.meta_version >= META_VERSION {
             return Ok(Outcome::Unchanged);
         }
-        if old.kind == FileKind::Document.as_str() {
-            // Documents have no LLM results yet, so their metadata can simply be
-            // re-extracted to pick up new fields (language, encoding, code detection).
-            refresh_document(state, &old.id, path, size).await?;
+        match refresh_derived(state, old, path, size).await? {
+            Refreshed::Kept => {
+                let (id, stat) = (old.id.clone(), stat);
+                state
+                    .db
+                    .call(move |c| models::refresh_stat(c, &id, &stat))
+                    .await?;
+                return Ok(Outcome::Updated);
+            }
+            Refreshed::Removed => return Ok(Outcome::Unsupported { removed: true }),
+            // The type changed: index it from scratch below.
+            Refreshed::Reclassified => {}
         }
-        let (id, stat) = (old.id.clone(), stat);
-        state
-            .db
-            .call(move |c| models::refresh_stat(c, &id, &stat))
-            .await?;
-        return Ok(Outcome::Updated);
     }
+    // A reclassified record was deleted above; treat the file as new.
+    let existing = match existing {
+        Some(old)
+            if old.meta_version < META_VERSION && old.size_bytes == size && old.mtime == mtime =>
+        {
+            None
+        }
+        other => other,
+    };
 
     let detected = {
         let p = path.to_path_buf();
@@ -309,29 +320,60 @@ async fn process_file(
     Ok(Outcome::Indexed)
 }
 
-async fn refresh_document(
+enum Refreshed {
+    Kept,
+    Removed,
+    Reclassified,
+}
+
+/// Unchanged file from an older index version. Images and videos keep everything
+/// (their LLM results are expensive); documents and archives are re-classified and
+/// their metadata re-extracted, which picks up new fields and detection fixes.
+async fn refresh_derived(
     state: &AppState,
-    id: &str,
+    old: &models::StoredStat,
     path: &Path,
     size: u64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Refreshed> {
+    let refreshable = [FileKind::Document.as_str(), FileKind::Archive.as_str()];
+    if !refreshable.contains(&old.kind.as_str()) {
+        return Ok(Refreshed::Kept);
+    }
     let p = path.to_path_buf();
     let detected = tokio::task::spawn_blocking(move || {
         detect::read_header(&p).map(|h| detect::classify(&p, &h))
     })
     .await??;
-    let Some(detected) = detected.filter(|d| d.kind == FileKind::Document) else {
-        return Ok(());
+    let id = old.id.clone();
+    let unsupported = detected.is_none();
+    let Some(detected) = detected.filter(|d| d.kind.as_str() == old.kind) else {
+        let removed = unsupported;
+        state.db.call(move |c| models::delete_file(c, &id)).await?;
+        return Ok(if removed {
+            Refreshed::Removed
+        } else {
+            Refreshed::Reclassified
+        });
     };
-    let (staged, _sha) = state.staging.copy_in(path, size).await?;
-    let Details::Document(meta) = extract_details(staged.path(), &detected).await? else {
-        return Ok(());
-    };
-    let id = id.to_string();
-    state
-        .db
-        .call(move |c| models::replace_document(c, &id, &meta))
-        .await
+    match detected.kind {
+        FileKind::Archive => {
+            let meta = detected.archive.context("archive without details")?;
+            state
+                .db
+                .call(move |c| models::replace_archive(c, &id, &meta))
+                .await?;
+        }
+        _ => {
+            let (staged, _sha) = state.staging.copy_in(path, size).await?;
+            if let Details::Document(meta) = extract_details(staged.path(), &detected).await? {
+                state
+                    .db
+                    .call(move |c| models::replace_document(c, &id, &meta))
+                    .await?;
+            }
+        }
+    }
+    Ok(Refreshed::Kept)
 }
 
 async fn extract_details(path: &Path, detected: &Detected) -> anyhow::Result<Details> {

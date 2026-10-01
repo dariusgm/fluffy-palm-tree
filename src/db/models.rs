@@ -118,7 +118,7 @@ pub struct StatFields {
 
 /// Bump when new per-file metadata is extracted, so re-indexing fills it in for
 /// files that are otherwise unchanged (without touching their LLM results).
-pub const META_VERSION: i32 = 4;
+pub const META_VERSION: i32 = 5;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ImageMeta {
@@ -285,6 +285,18 @@ pub fn refresh_stat(conn: &Connection, id: &str, stat: &StatFields) -> anyhow::R
             id
         ],
     )?;
+    Ok(())
+}
+
+/// Replaces only the archive metadata of an existing record.
+pub fn replace_archive(conn: &mut Connection, id: &str, m: &ArchiveMeta) -> anyhow::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM archives WHERE file_id = ?", params![id])?;
+    tx.execute(
+        "INSERT INTO archives (file_id, compression, format) VALUES (?, ?, ?)",
+        params![id, m.compression, m.format],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

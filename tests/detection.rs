@@ -270,3 +270,68 @@ async fn old_records_are_upgraded_without_losing_llm_results() {
         "{job}"
     );
 }
+
+#[tokio::test]
+async fn office_zip_containers_are_not_archives_and_old_records_are_fixed() {
+    let env = TestEnv::new();
+    let mut odp = b"PK\x03\x04".to_vec();
+    odp.extend_from_slice(&[0u8; 26]);
+    odp.extend_from_slice(b"mimetypeapplication/vnd.oasis.opendocument.presentation");
+    std::fs::write(env.root.join("talk.odp"), &odp).unwrap();
+    let mut zip = b"PK\x03\x04".to_vec();
+    zip.extend_from_slice(&[0u8; 60]);
+    std::fs::write(env.root.join("bundle.zip"), zip).unwrap();
+
+    let job = index(&env).await;
+    assert_eq!(job["found"], 1, "{job}");
+    assert_eq!(
+        names(&search(&env, json!({ "kind": "archive" })).await),
+        vec!["bundle.zip"]
+    );
+
+    // Simulate a record written by an older version that stored the .odp as an archive.
+    let odp_path = env.root.join("talk.odp").display().to_string();
+    env.state
+        .db
+        .call(move |c| {
+            c.execute(
+                r#"INSERT INTO files (id, root, rel_path, abs_path, file_name, extension, kind,
+                                      size_bytes, mode, mode_str, mtime, indexed_at, meta_version)
+                   SELECT 'old-odp', root, 'talk.odp', ?, 'talk.odp', 'odp', 'archive',
+                          size_bytes, mode, mode_str, mtime, now(), 1
+                   FROM files WHERE file_name = 'bundle.zip'"#,
+                [odp_path],
+            )?;
+            c.execute_batch(
+                "INSERT INTO archives VALUES ('old-odp', 'zip', 'zip');
+                 UPDATE files SET meta_version = 1;",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // Make the stat of the fake record match the real file, so only the version differs.
+    let meta = std::fs::metadata(env.root.join("talk.odp")).unwrap();
+    let (size, mtime) = (meta.len() as i64, meta.modified().unwrap());
+    let mtime: chrono::DateTime<chrono::Utc> = mtime.into();
+    let micros = mtime.timestamp_micros();
+    env.state
+        .db
+        .call(move |c| {
+            c.execute(
+                "UPDATE files SET size_bytes = ?, mtime = make_timestamp(?) WHERE id = 'old-odp'",
+                duckdb::params![size, micros],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let job = index(&env).await;
+    assert_eq!(job["removed"], 1, "{job}");
+    assert_eq!(job["updated"], 1, "plain zip refreshed: {job}");
+    assert_eq!(
+        names(&search(&env, json!({ "kind": "archive" })).await),
+        vec!["bundle.zip"]
+    );
+}
