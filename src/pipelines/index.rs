@@ -206,6 +206,11 @@ async fn process_file(
         if old.meta_version >= META_VERSION {
             return Ok(Outcome::Unchanged);
         }
+        if old.kind == FileKind::Document.as_str() {
+            // Documents have no LLM results yet, so their metadata can simply be
+            // re-extracted to pick up new fields (language, encoding, code detection).
+            refresh_document(state, &old.id, path, size).await?;
+        }
         let (id, stat) = (old.id.clone(), stat);
         state
             .db
@@ -302,6 +307,31 @@ async fn process_file(
         tracing::debug!(path = %path.display(), "reused LLM results of identical content");
     }
     Ok(Outcome::Indexed)
+}
+
+async fn refresh_document(
+    state: &AppState,
+    id: &str,
+    path: &Path,
+    size: u64,
+) -> anyhow::Result<()> {
+    let p = path.to_path_buf();
+    let detected = tokio::task::spawn_blocking(move || {
+        detect::read_header(&p).map(|h| detect::classify(&p, &h))
+    })
+    .await??;
+    let Some(detected) = detected.filter(|d| d.kind == FileKind::Document) else {
+        return Ok(());
+    };
+    let (staged, _sha) = state.staging.copy_in(path, size).await?;
+    let Details::Document(meta) = extract_details(staged.path(), &detected).await? else {
+        return Ok(());
+    };
+    let id = id.to_string();
+    state
+        .db
+        .call(move |c| models::replace_document(c, &id, &meta))
+        .await
 }
 
 async fn extract_details(path: &Path, detected: &Detected) -> anyhow::Result<Details> {

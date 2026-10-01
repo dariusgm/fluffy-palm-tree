@@ -118,7 +118,7 @@ pub struct StatFields {
 
 /// Bump when new per-file metadata is extracted, so re-indexing fills it in for
 /// files that are otherwise unchanged (without touching their LLM results).
-pub const META_VERSION: i32 = 2;
+pub const META_VERSION: i32 = 3;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ImageMeta {
@@ -175,6 +175,7 @@ pub struct StoredStat {
     pub mtime: Option<DateTime<Utc>>,
     pub sha256: Option<String>,
     pub meta_version: i32,
+    pub kind: String,
 }
 
 /// Tables holding rows that belong to a file. All of them are cleared when the file's
@@ -208,7 +209,7 @@ pub fn find_stat(
 ) -> anyhow::Result<Option<StoredStat>> {
     let row = conn
         .query_row(
-            "SELECT id, size_bytes, mtime, sha256, meta_version FROM files WHERE root = ? AND rel_path = ?",
+            "SELECT id, size_bytes, mtime, sha256, meta_version, kind FROM files WHERE root = ? AND rel_path = ?",
             params![root, rel_path],
             |r| {
                 Ok(StoredStat {
@@ -217,6 +218,7 @@ pub fn find_stat(
                     mtime: r.get(2)?,
                     sha256: r.get(3)?,
                     meta_version: r.get::<_, Option<i32>>(4)?.unwrap_or(1),
+                    kind: r.get(5)?,
                 })
             },
         )
@@ -280,6 +282,26 @@ pub fn refresh_stat(conn: &Connection, id: &str, stat: &StatFields) -> anyhow::R
             id
         ],
     )?;
+    Ok(())
+}
+
+/// Replaces only the document metadata of an existing record (keeps id, summary, tags).
+pub fn replace_document(conn: &mut Connection, id: &str, m: &DocumentMeta) -> anyhow::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM documents WHERE file_id = ?", params![id])?;
+    tx.execute(
+        "INSERT INTO documents (file_id, doc_type, page_count, content, language, encoding)
+         VALUES (?, ?, ?, ?, ?, ?)",
+        params![
+            id,
+            m.doc_type.as_str(),
+            m.page_count,
+            m.content,
+            m.language,
+            m.encoding
+        ],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

@@ -225,6 +225,9 @@ tests/           integration tests
 - All state (files, metadata, LLM results, jobs) lives in the DuckDB file at
   `database.path` (default `./data/search.duckdb`) and survives restarts. Back up that
   file to keep the LLM results. Keep it on a persistent disk, not in `/tmp`.
+- `META_VERSION` (`src/db/models.rs`) marks which metadata a record contains. When new
+  metadata is extracted, bump it. The next index run fills it in for unchanged files:
+  stat fields are refreshed and documents re-extracted, while LLM results stay untouched.
 - DuckDB is accessed through one mutex-protected connection on the blocking thread
   pool (DuckDB has a single writer). Schema changes are append-only migrations in
   `src/db/schema.rs`.

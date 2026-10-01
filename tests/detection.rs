@@ -188,6 +188,34 @@ async fn created_and_modified_are_stored() {
 }
 
 #[tokio::test]
+async fn old_documents_get_new_document_metadata() {
+    let env = TestEnv::new();
+    std::fs::write(env.root.join("script.py"), "print('hi')\n").unwrap();
+    index(&env).await;
+    env.state
+        .db
+        .call(|c| {
+            c.execute_batch(
+                "UPDATE files SET meta_version = 1;
+                 UPDATE documents SET doc_type = 'text', language = NULL, encoding = NULL;",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let id_before = search(&env, json!({ "name": "script.py" })).await[0]["id"].clone();
+
+    let job = index(&env).await;
+    assert_eq!(job["updated"], 1, "{job}");
+    let r = &search(&env, json!({ "name": "script.py" })).await[0];
+    assert_eq!(r["id"], id_before, "same record");
+    assert_eq!(r["document"]["doc_type"], "code");
+    assert_eq!(r["document"]["language"], "python");
+    assert_eq!(r["document"]["encoding"], "ascii");
+    assert!(env.staging_is_empty());
+}
+
+#[tokio::test]
 async fn old_records_are_upgraded_without_losing_llm_results() {
     let env = TestEnv::new();
     write_png(&env.root.join("photo.png"), 8, 8);
