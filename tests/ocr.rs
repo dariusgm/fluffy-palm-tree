@@ -217,3 +217,74 @@ async fn scanned_pdf_is_described_and_transcribed() {
     assert!(text["ocr_status"].is_null(), "text layer present: no OCR");
     assert!(env.staging_is_empty());
 }
+
+#[tokio::test]
+async fn text_and_code_documents_get_summaries() {
+    let server = MockServer::start().await;
+    // Content is sent as text inside the prompt; no image is involved.
+    Mock::given(method("POST"))
+        .and(body_string_contains("summarize documents and source code"))
+        .and(body_string_contains("Type: code (python)"))
+        .and(body_string_contains("def fetch_weather"))
+        .respond_with(answer(json!({
+            "summary": "A Python script that downloads weather forecasts.",
+            "topics": ["OpenWeather API", "Berlin"],
+            "tags": ["python", "weather"]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_string_contains("Type: markdown"))
+        .and(body_string_contains("(truncated: first 200 of"))
+        .respond_with(answer(
+            json!({ "summary": "Meeting notes about the garden project." }),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let uri = server.uri();
+    let env = TestEnv::with_config(move |c| {
+        c.llm.base_url = uri;
+        c.llm.timeout_secs = 5;
+        c.llm.doc_summary_max_chars = 200;
+    });
+    std::fs::write(
+        env.root.join("weather.py"),
+        "import requests\n\ndef fetch_weather(city):\n    return requests.get(URL, params={'q': city}).json()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        env.root.join("notes.md"),
+        format!("# Garden\n{}", "Plant tomatoes. ".repeat(50)),
+    )
+    .unwrap();
+    std::fs::write(env.root.join("empty.json"), "{}").unwrap();
+    run_job(&env, "/index", json!({ "path": env.root })).await;
+
+    let job = run_job(&env, "/import_media", json!({ "kind": ["document"] })).await;
+    assert_eq!(
+        (job["processed"].as_u64(), job["failed"].as_u64()),
+        (Some(3), Some(0)),
+        "{job}"
+    );
+
+    let hit = &find(&env, json!({ "text": "openweather forecasts" })).await[0];
+    assert_eq!(hit["name"], "weather.py");
+    assert_eq!(hit["summary_status"], "done");
+    assert!(
+        hit["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Topics: OpenWeather API, Berlin.")
+    );
+    assert_eq!(
+        find(&env, json!({ "name": "empty.json" })).await[0]["summary_status"],
+        "skipped"
+    );
+    assert!(
+        env.staging_is_empty(),
+        "documents are summarized without fetching the file"
+    );
+    assert_eq!(run_job(&env, "/import_media", json!({})).await["found"], 0);
+}

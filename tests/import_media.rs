@@ -66,12 +66,19 @@ async fn imports_image_description_and_makes_it_searchable() {
 
     let job = run_job(&env, "/import_media", json!({})).await;
     assert_eq!(job["status"], "completed", "{job}");
+    // The image plus notes.txt, which is too short to summarize (skipped, no LLM call).
     assert_eq!(
         (job["found"].as_u64(), job["processed"].as_u64()),
-        (Some(1), Some(1)),
+        (Some(2), Some(2)),
         "{job}"
     );
     assert!(env.staging_is_empty());
+    let notes = query(
+        &env,
+        "SELECT summary_status FROM files WHERE file_name = 'notes.txt'",
+    )
+    .await;
+    assert_eq!(notes, vec![vec!["skipped"]]);
 
     let (_, r) = env
         .call(post_json(

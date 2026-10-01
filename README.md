@@ -53,8 +53,8 @@ File types are detected by content (magic bytes), not by extension, so a PNG nam
   line).
 - Other binary formats (office files, executables, audio, databases, ...) are ignored.
 
-Only images and videos get LLM descriptions. Documents keep `summary_status: pending`
-for planned LLM document summaries. Archives get `skipped`.
+Images, videos and documents get LLM summaries through `/import_media`; archives are
+marked `skipped`.
 
 ## API
 
@@ -106,8 +106,12 @@ steps run again.
 | Image | description of the image | full transcription of visible text (see `llm.ocr_images`) |
 | Video | frames: first, every `video_frame_interval_secs` (default 60 s), last; described and merged | — |
 | PDF | description of the rendered first page | scanned PDFs (no text layer) only: every page transcribed, up to `llm.pdf_ocr_max_pages`; text PDFs already have their text via `pdftotext` |
+| Text, Markdown, Code | summary of the extracted text (first `llm.doc_summary_max_chars` characters): purpose, main content, topics (names, dates, identifiers), tags | — (the text itself is already searchable) |
 
-Other documents (text, code) keep `summary_status: pending` for future document summaries.
+Text and code summaries use the text extracted at index time, so these files are not
+fetched again. Documents with fewer than 20 non-whitespace characters get no LLM call
+and are marked `skipped`. Summaries are written in English (matching the English search
+stemming); names, numbers and identifiers are kept as they appear.
 
 For each item, the job:
 1. copies the file from the source into staging again (the path must still be inside
@@ -270,8 +274,8 @@ tests/           integration tests
 
 ## Roadmap
 
-- Document summaries through the LLM (`/import_media` with `kind: ["document"]`,
-  chunking long documents)
+- Summaries of long documents beyond `doc_summary_max_chars` (chunking), and text-based
+  summaries for text PDFs in addition to the first-page description
 - Office documents (docx/xlsx/pptx); archive content listings (file names inside zip/tar)
 - `people_count` as a search filter, since a text query like "person" misses many images
 - Tagging API (`POST /files/{id}/tags`, `DELETE /files/{id}/tags/{tag}`); `tag` is

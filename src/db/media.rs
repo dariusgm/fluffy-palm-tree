@@ -27,7 +27,8 @@ pub struct MediaCandidate {
     pub size_bytes: u64,
     pub duration_secs: Option<f64>,
     pub page_count: Option<u32>,
-    /// Needs an LLM description ("what we see").
+    pub doc_type: Option<String>,
+    /// Needs an LLM description ("what we see") or, for text/code, a summary.
     pub describe: bool,
     /// Needs text recognition ("what text is inside").
     pub ocr: bool,
@@ -44,7 +45,8 @@ pub struct CandidateFilter {
 }
 
 /// Selects work for `/import_media`:
-/// - describe: images, videos and PDFs whose summary is pending (or done/failed with `force`)
+/// - describe: images, videos and documents whose summary is pending (or done/failed with
+///   `force`); PDFs are described from their first page, text/code is summarized
 /// - ocr: scanned PDFs and images without an OCR result yet (or any with `force`); for
 ///   images only together with or after a successful description, which decides in
 ///   `auto` mode whether there is text at all
@@ -65,11 +67,11 @@ pub fn select_candidates(
     let mut sql = format!(
         r#"SELECT * FROM (
              SELECT f.id, f.abs_path, f.kind, f.size_bytes, v.duration_secs, d.page_count,
-                    ({describe_status}
-                     AND (f.kind IN ('image', 'video') OR d.doc_type = 'pdf')) AS do_describe,
+                    ({describe_status} AND f.kind IN ('image', 'video', 'document')) AS do_describe,
                     ({ocr_status} AND f.summary_status <> 'skipped'
                      AND ((f.kind = 'image' AND ({describe_status} OR f.summary_status = 'done'))
-                          OR coalesce(d.needs_ocr, false))) AS do_ocr
+                          OR coalesce(d.needs_ocr, false))) AS do_ocr,
+                    d.doc_type
              FROM files f
              LEFT JOIN videos v ON v.file_id = f.id
              LEFT JOIN documents d ON d.file_id = f.id
@@ -105,9 +107,34 @@ pub fn select_candidates(
             page_count: r.get::<_, Option<i64>>(5)?.map(|p| p as u32),
             describe: r.get(6)?,
             ocr: r.get(7)?,
+            doc_type: r.get(8)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Extracted text of a document together with what the summary prompt needs.
+pub struct DocumentText {
+    pub file_name: String,
+    pub doc_type: String,
+    pub language: Option<String>,
+    pub content: String,
+}
+
+pub fn document_text(conn: &Connection, id: &str) -> anyhow::Result<DocumentText> {
+    Ok(conn.query_row(
+        r#"SELECT f.file_name, d.doc_type, d.language, coalesce(d.content, '')
+           FROM files f JOIN documents d ON d.file_id = f.id WHERE f.id = ?"#,
+        params![id],
+        |r| {
+            Ok(DocumentText {
+                file_name: r.get(0)?,
+                doc_type: r.get(1)?,
+                language: r.get(2)?,
+                content: r.get(3)?,
+            })
+        },
+    )?)
 }
 
 /// `visible_text` reported by the latest description of a file (used to decide whether

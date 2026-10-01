@@ -73,6 +73,9 @@ pub struct LlmConfig {
     /// Resolution used to render PDF pages to images.
     #[serde(default = "default_pdf_render_dpi")]
     pub pdf_render_dpi: u32,
+    /// Characters of a text/code document sent to the LLM for its summary.
+    #[serde(default = "default_doc_summary_max_chars")]
+    pub doc_summary_max_chars: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -105,6 +108,9 @@ fn default_pdf_ocr_max_pages() -> u32 {
 }
 fn default_pdf_render_dpi() -> u32 {
     150
+}
+fn default_doc_summary_max_chars() -> usize {
+    12_000
 }
 
 impl Config {

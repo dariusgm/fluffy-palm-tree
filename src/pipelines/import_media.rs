@@ -117,6 +117,11 @@ async fn process(state: &AppState, job: &Job, item: MediaCandidate) {
 
     let mut errors: Vec<anyhow::Error> = Vec::new();
     match outcome.summary {
+        Some(Ok(summary)) if summary.is_empty() => {
+            if let Err(e) = update_status(state, &item.id, SummaryStatus::Skipped).await {
+                errors.push(e);
+            }
+        }
         Some(Ok(summary)) => {
             let id = item.id.clone();
             if let Err(e) = state
@@ -199,6 +204,16 @@ async fn analyze(
     job: &Job,
     item: &MediaCandidate,
 ) -> anyhow::Result<ItemOutcome> {
+    if item.kind == FileKind::Document && item.doc_type.as_deref() != Some("pdf") {
+        // Text and code are summarized from the text extracted at index time (kept
+        // current by the hash check), so the file is not fetched again.
+        let summary = if item.describe {
+            Some(summarize_document(state, item).await)
+        } else {
+            None
+        };
+        return Ok(ItemOutcome { summary, ocr: None });
+    }
     if item.size_bytes > state.config.staging.max_file_bytes {
         bail!("file exceeds staging.max_file_bytes");
     }
@@ -384,6 +399,44 @@ async fn analyze_video(
     )
     .await
     .map(|(text, _)| text)
+}
+
+/// Minimum non-whitespace characters for a document to be worth summarizing.
+const MIN_DOC_CHARS: usize = 20;
+
+/// Summarizes a text/markdown/code document. Returns an empty string for (nearly)
+/// empty documents, which are then marked `skipped` without an LLM call.
+async fn summarize_document(state: &AppState, item: &MediaCandidate) -> anyhow::Result<String> {
+    let id = item.id.clone();
+    let doc = state.db.call(move |c| media::document_text(c, &id)).await?;
+    if doc.content.chars().filter(|c| !c.is_whitespace()).count() < MIN_DOC_CHARS {
+        return Ok(String::new());
+    }
+    let total = doc.content.chars().count();
+    let head: String = doc
+        .content
+        .chars()
+        .take(state.config.llm.doc_summary_max_chars)
+        .collect();
+    let prompt = prompts::doc_user(
+        &doc.file_name,
+        &doc.doc_type,
+        doc.language.as_deref(),
+        &head,
+        total,
+    );
+    let (text, _) = call_llm(
+        state,
+        &item.id,
+        None,
+        prompts::DOC_PROMPT_VERSION,
+        prompts::DOC_SYSTEM,
+        vec![Part::Text(prompt)],
+        MAX_TOKENS,
+        describe_text,
+    )
+    .await?;
+    Ok(text)
 }
 
 /// Describes an image; returns the searchable text and the `visible_text` it reported.

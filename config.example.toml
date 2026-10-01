@@ -45,3 +45,5 @@ ocr_max_edge = 1600
 # Scanned PDFs (no text layer) are transcribed page by page, up to this many pages.
 pdf_ocr_max_pages = 20
 pdf_render_dpi = 150
+# Text and code documents are summarized from their first N characters.
+doc_summary_max_chars = 12000
