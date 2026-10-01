@@ -43,3 +43,7 @@ staging/
 
 # Logs
 *.log
+
+# Python helper scripts
+.venv/
+__pycache__/
