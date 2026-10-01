@@ -118,7 +118,7 @@ pub struct StatFields {
 
 /// Bump when new per-file metadata is extracted, so re-indexing fills it in for
 /// files that are otherwise unchanged (without touching their LLM results).
-pub const META_VERSION: i32 = 3;
+pub const META_VERSION: i32 = 4;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ImageMeta {
@@ -135,6 +135,8 @@ pub struct DocumentMeta {
     pub language: Option<String>,
     /// Character encoding of text documents: ascii, utf-8, utf-16le/be, windows-1252.
     pub encoding: Option<String>,
+    /// PDF without a usable text layer (scan): its pages need OCR.
+    pub needs_ocr: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +188,7 @@ const FILE_CHILD_TABLES: &[&str] = &[
     "videos",
     "archives",
     "video_frames",
+    "ocr",
     "analyses",
     "tags",
 ];
@@ -290,15 +293,16 @@ pub fn replace_document(conn: &mut Connection, id: &str, m: &DocumentMeta) -> an
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM documents WHERE file_id = ?", params![id])?;
     tx.execute(
-        "INSERT INTO documents (file_id, doc_type, page_count, content, language, encoding)
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO documents (file_id, doc_type, page_count, content, language, encoding, needs_ocr)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
         params![
             id,
             m.doc_type.as_str(),
             m.page_count,
             m.content,
             m.language,
-            m.encoding
+            m.encoding,
+            m.needs_ocr
         ],
     )?;
     tx.commit()?;
@@ -323,8 +327,15 @@ pub fn reuse_analysis(conn: &mut Connection, id: &str, sha256: &str) -> anyhow::
     };
     let tx = conn.transaction()?;
     tx.execute(
-        "UPDATE files SET summary = ?, summary_status = 'done' WHERE id = ?",
-        params![summary, id],
+        r#"UPDATE files SET summary = ?, summary_status = 'done',
+                  ocr_status = (SELECT ocr_status FROM files WHERE id = ?)
+           WHERE id = ?"#,
+        params![summary, donor_id, id],
+    )?;
+    tx.execute("DELETE FROM ocr WHERE file_id = ?", params![id])?;
+    tx.execute(
+        "INSERT INTO ocr (file_id, page, text) SELECT ?, page, text FROM ocr WHERE file_id = ?",
+        params![id, donor_id],
     )?;
     tx.execute("DELETE FROM video_frames WHERE file_id = ?", params![id])?;
     tx.execute(
@@ -421,15 +432,16 @@ pub fn save_indexed(
         }
         Details::Document(m) => {
             tx.execute(
-                "INSERT INTO documents (file_id, doc_type, page_count, content, language, encoding)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO documents (file_id, doc_type, page_count, content, language, encoding, needs_ocr)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
                 params![
                     id,
                     m.doc_type.as_str(),
                     m.page_count,
                     m.content,
                     m.language,
-                    m.encoding
+                    m.encoding,
+                    m.needs_ocr
                 ],
             )?;
         }

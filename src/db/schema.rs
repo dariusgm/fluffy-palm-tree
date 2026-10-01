@@ -108,6 +108,16 @@ CREATE TABLE archives (
     format      TEXT NOT NULL
 );
 "#,
+    r#"
+ALTER TABLE files ADD COLUMN ocr_status TEXT;
+ALTER TABLE documents ADD COLUMN needs_ocr BOOLEAN DEFAULT false;
+CREATE TABLE ocr (
+    file_id TEXT NOT NULL,
+    page    INTEGER NOT NULL,
+    text    TEXT NOT NULL,
+    PRIMARY KEY (file_id, page)
+);
+"#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {

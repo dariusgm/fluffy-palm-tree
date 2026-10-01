@@ -3,6 +3,19 @@ use serde_json::Value;
 /// Bump when prompts change so runs can be compared in the `analyses` table.
 pub const IMAGE_PROMPT_VERSION: &str = "img-v2";
 pub const VIDEO_MERGE_PROMPT_VERSION: &str = "video-merge-v2";
+pub const OCR_PROMPT_VERSION: &str = "ocr-v1";
+
+pub const OCR_SYSTEM: &str = "You transcribe text from images exactly. You never describe the \
+image, never translate and never invent text. You always answer with a single JSON object and nothing else.";
+
+pub const OCR_USER: &str = r#"Transcribe all readable text in this image. Answer with JSON: {"text": "..."}
+Rules:
+- Keep the original language, spelling, numbers and punctuation.
+- Keep the reading order: top to bottom, left to right, columns one after another.
+- Use a line break between lines and an empty line between blocks.
+- Reproduce tables row by row with " | " between cells.
+- Skip text that is too blurry to read instead of guessing. Never repeat lines.
+- If there is no readable text, answer {"text": ""}."#;
 
 pub const IMAGE_SYSTEM: &str = "You are a precise visual cataloguing assistant. \
 You describe only what is visible. You never guess names or identities of people. \
@@ -85,8 +98,43 @@ pub fn parse_json(text: &str) -> Option<Value> {
 
 /// Recovers the `summary` string from a JSON answer that was cut off mid-way.
 pub fn salvage_summary(text: &str) -> Option<String> {
-    let key = text.find("\"summary\"")?;
-    let rest = text[key + "\"summary\"".len()..].trim_start();
+    salvage_field(text, "summary")
+}
+
+/// Text from an OCR answer: the `text` field, or as much of it as can be recovered when
+/// the answer was cut off. `Some("")` means the model found no text.
+pub fn parse_ocr(answer: &str) -> Option<String> {
+    if let Some(v) = parse_json(answer) {
+        return v["text"].as_str().map(|t| t.trim().to_string());
+    }
+    salvage_field(answer, "text").or_else(|| salvage_partial_string(answer, "text"))
+}
+
+/// Like [`salvage_field`], but also accepts a string value that was cut off before its
+/// closing quote (long OCR output hitting `max_tokens`).
+fn salvage_partial_string(text: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\"");
+    let key = text.find(&needle)?;
+    let rest = text[key + needle.len()..]
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start();
+    let body = rest.strip_prefix('"')?;
+    let mut closed = format!("\"{body}");
+    // Drop a dangling escape, then close the string so it can be decoded.
+    if closed.ends_with('\\') && !closed.ends_with("\\\\") {
+        closed.pop();
+    }
+    closed.push('"');
+    let s: String = serde_json::from_str(&closed).ok()?;
+    let s = s.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+fn salvage_field(text: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\"");
+    let key = text.find(&needle)?;
+    let rest = text[key + needle.len()..].trim_start();
     let rest = rest.strip_prefix(':')?.trim_start();
     let summary: String = serde_json::Deserializer::from_str(rest)
         .into_iter::<String>()
@@ -192,6 +240,21 @@ mod tests {
         assert_eq!(v["summary"], "x");
         assert!(parse_json("no json here").is_none());
         assert!(parse_json("[1, 2]").is_none());
+    }
+
+    #[test]
+    fn parses_ocr_answers() {
+        assert_eq!(
+            parse_ocr("{\"text\": \" STOP\\n42 \"}").as_deref(),
+            Some("STOP\n42")
+        );
+        assert_eq!(parse_ocr("{\"text\": \"\"}").as_deref(), Some(""));
+        assert_eq!(
+            parse_ocr("{\"text\": \"Rechnung Nr. 4711\\nBetrag: 89,50 EUR\\nZahlb").as_deref(),
+            Some("Rechnung Nr. 4711\nBetrag: 89,50 EUR\nZahlb"),
+            "cut-off output is kept"
+        );
+        assert_eq!(parse_ocr("no json"), None);
     }
 
     #[test]

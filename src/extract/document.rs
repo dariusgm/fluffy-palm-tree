@@ -29,6 +29,7 @@ pub async fn extract(
                 content: Some(content),
                 language,
                 encoding: Some(encoding.to_string()),
+                needs_ocr: false,
             })
         }
         DocType::Pdf => {
@@ -48,10 +49,12 @@ pub async fn extract(
             let page_count = info
                 .ok()
                 .and_then(|out| parse_pdfinfo_pages(&String::from_utf8_lossy(&out)));
+            let content = truncate_utf8(String::from_utf8_lossy(&text).into_owned());
             Ok(DocumentMeta {
                 doc_type,
                 page_count,
-                content: Some(truncate_utf8(String::from_utf8_lossy(&text).into_owned())),
+                needs_ocr: lacks_text_layer(&content, page_count),
+                content: Some(content),
                 language: None,
                 encoding: None,
             })
@@ -83,6 +86,13 @@ pub fn decode_text(buf: &[u8]) -> (String, &'static str) {
     }
     let (text, _) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(buf);
     (text.into_owned(), "windows-1252")
+}
+
+/// A scanned PDF yields (almost) no text: fewer than 20 non-whitespace characters per
+/// page on average (page numbers or stray marks don't count as a text layer).
+fn lacks_text_layer(text: &str, pages: Option<u32>) -> bool {
+    let chars = text.chars().filter(|c| !c.is_whitespace()).count();
+    chars < 20 * pages.unwrap_or(1).max(1) as usize
 }
 
 fn parse_pdfinfo_pages(out: &str) -> Option<u32> {
@@ -133,6 +143,17 @@ mod tests {
             decode_text(b"\xfe\xff\0h\0i"),
             ("hi".to_string(), "utf-16be")
         );
+    }
+
+    #[test]
+    fn detects_missing_text_layer() {
+        assert!(lacks_text_layer("", Some(1)));
+        assert!(lacks_text_layer("  1  \n\n 2 ", Some(2)));
+        assert!(!lacks_text_layer(
+            "Invoice Number 4711 for bicycle repair",
+            Some(1)
+        ));
+        assert!(lacks_text_layer("short text only on one page", Some(99)));
     }
 
     #[test]

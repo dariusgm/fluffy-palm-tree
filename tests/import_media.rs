@@ -178,11 +178,11 @@ async fn filters_by_prefix_ids_and_limit() {
 }
 
 #[tokio::test]
-async fn rejects_documents_and_unknown_fields() {
+async fn rejects_archives_and_unknown_fields() {
     let server = MockServer::start().await;
     let env = env_with_llm(&server).await;
     for body in [
-        json!({ "kind": ["document"] }),
+        json!({ "kind": ["archive"] }),
         json!({ "bogus": 1 }),
         json!({ "kind": ["audio"] }),
     ] {

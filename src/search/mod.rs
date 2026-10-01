@@ -43,6 +43,11 @@ pub struct SearchHit {
     pub sha256: Option<String>,
     pub summary: String,
     pub summary_status: String,
+    /// Text recognition: done, none (no text found), failed, skipped, or null (not run).
+    pub ocr_status: Option<String>,
+    /// Recognised text (first 1000 characters, pages joined).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_text: Option<String>,
     pub indexed_at: DateTime<Utc>,
     pub score: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -240,13 +245,15 @@ fn hit_from_row(r: &Row<'_>) -> duckdb::Result<(SearchHit, u64)> {
         indexed_at: r.get(17)?,
         created: r.get(32)?,
         archive: archive.transpose()?,
-        score: r.get(37)?,
+        ocr_status: r.get(37)?,
+        ocr_text: r.get(38)?,
+        score: r.get(39)?,
         image: image.transpose()?,
         document: document.transpose()?,
         video: video.transpose()?,
         matched_frames: Vec::new(),
         kind,
     };
-    let total: i64 = r.get(38)?;
+    let total: i64 = r.get(40)?;
     Ok((hit, total as u64))
 }

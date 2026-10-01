@@ -1,5 +1,5 @@
 use chrono::Utc;
-use duckdb::{Connection, params, params_from_iter};
+use duckdb::{Connection, OptionalExt, params, params_from_iter};
 use serde_json::Value;
 
 use super::models::{FileKind, SummaryStatus};
@@ -26,6 +26,11 @@ pub struct MediaCandidate {
     pub kind: FileKind,
     pub size_bytes: u64,
     pub duration_secs: Option<f64>,
+    pub page_count: Option<u32>,
+    /// Needs an LLM description ("what we see").
+    pub describe: bool,
+    /// Needs text recognition ("what text is inside").
+    pub ocr: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -38,27 +43,40 @@ pub struct CandidateFilter {
     pub force: bool,
 }
 
+/// Selects work for `/import_media`:
+/// - describe: images, videos and PDFs whose summary is pending (or done/failed with `force`)
+/// - ocr: scanned PDFs and images without an OCR result yet (or any with `force`); for
+///   images only together with or after a successful description, which decides in
+///   `auto` mode whether there is text at all
 pub fn select_candidates(
     conn: &Connection,
     f: &CandidateFilter,
 ) -> anyhow::Result<Vec<MediaCandidate>> {
-    let mut sql = String::from(
-        "SELECT f.id, f.abs_path, f.kind, f.size_bytes, v.duration_secs
-         FROM files f LEFT JOIN videos v ON v.file_id = f.id WHERE ",
-    );
-    let mut params: Vec<String> = Vec::new();
-
-    sql.push_str(&format!(
-        "f.kind IN ({})",
-        vec!["?"; f.kinds.len()].join(", ")
-    ));
-    params.extend(f.kinds.iter().map(|k| k.as_str().to_string()));
-
-    if f.force {
-        sql.push_str(" AND f.summary_status IN ('pending', 'done', 'failed')");
+    let describe_status = if f.force {
+        "f.summary_status IN ('pending', 'done', 'failed')"
     } else {
-        sql.push_str(" AND f.summary_status = 'pending'");
-    }
+        "f.summary_status = 'pending'"
+    };
+    let ocr_status = if f.force {
+        "true"
+    } else {
+        "f.ocr_status IS NULL"
+    };
+    let mut sql = format!(
+        r#"SELECT * FROM (
+             SELECT f.id, f.abs_path, f.kind, f.size_bytes, v.duration_secs, d.page_count,
+                    ({describe_status}
+                     AND (f.kind IN ('image', 'video') OR d.doc_type = 'pdf')) AS do_describe,
+                    ({ocr_status} AND f.summary_status <> 'skipped'
+                     AND ((f.kind = 'image' AND ({describe_status} OR f.summary_status = 'done'))
+                          OR coalesce(d.needs_ocr, false))) AS do_ocr
+             FROM files f
+             LEFT JOIN videos v ON v.file_id = f.id
+             LEFT JOIN documents d ON d.file_id = f.id
+             WHERE f.summary_status <> 'running' AND f.kind IN ({kinds})"#,
+        kinds = vec!["?"; f.kinds.len()].join(", ")
+    );
+    let mut params: Vec<String> = f.kinds.iter().map(|k| k.as_str().to_string()).collect();
     if let Some(prefix) = &f.path_prefix {
         sql.push_str(" AND starts_with(f.abs_path, ?)");
         params.push(prefix.clone());
@@ -70,7 +88,7 @@ pub fn select_candidates(
         ));
         params.extend(f.ids.iter().cloned());
     }
-    sql.push_str(" ORDER BY f.abs_path");
+    sql.push_str(") WHERE do_describe OR do_ocr ORDER BY abs_path");
     if let Some(limit) = f.limit {
         sql.push_str(&format!(" LIMIT {limit}"));
     }
@@ -84,9 +102,52 @@ pub fn select_candidates(
             kind: kind.parse().unwrap_or(FileKind::Image),
             size_bytes: r.get::<_, i64>(3)? as u64,
             duration_secs: r.get(4)?,
+            page_count: r.get::<_, Option<i64>>(5)?.map(|p| p as u32),
+            describe: r.get(6)?,
+            ocr: r.get(7)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// `visible_text` reported by the latest description of a file (used to decide whether
+/// an already described image needs OCR).
+pub fn latest_visible_text(conn: &Connection, id: &str) -> anyhow::Result<Option<String>> {
+    let text: Option<Option<String>> = conn
+        .query_row(
+            r#"SELECT parsed->>'$.visible_text' FROM analyses
+               WHERE file_id = ? AND ts_secs IS NULL AND parsed IS NOT NULL
+                 AND prompt_version LIKE 'img-%'
+               ORDER BY created_at DESC LIMIT 1"#,
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(text.flatten())
+}
+
+/// Stores OCR text per page (images use page 1) and the resulting status:
+/// `done` (text found), `none` (no text) or `failed`.
+pub fn set_ocr(
+    conn: &mut Connection,
+    id: &str,
+    pages: &[(u32, String)],
+    status: &str,
+) -> anyhow::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM ocr WHERE file_id = ?", params![id])?;
+    for (page, text) in pages.iter().filter(|(_, t)| !t.is_empty()) {
+        tx.execute(
+            "INSERT INTO ocr (file_id, page, text) VALUES (?, ?, ?)",
+            params![id, page, text],
+        )?;
+    }
+    tx.execute(
+        "UPDATE files SET ocr_status = ? WHERE id = ?",
+        params![status, id],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn set_status(conn: &Connection, id: &str, status: SummaryStatus) -> anyhow::Result<()> {

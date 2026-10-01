@@ -96,24 +96,35 @@ reading it in place when `staging.copy_on_index = false`. Files above
 {}
 { "kind": ["image", "video"], "path_prefix": "/mnt/share/photos", "ids": [], "limit": 50, "force": false }
 ```
-All fields are optional (send `{}` for the defaults). The job processes images and
-videos whose summary is still `pending`. With `force: true` it also re-processes
-`done` and `failed` items.
+All fields are optional (send `{}` for the defaults). `kind` defaults to image, video
+and document; archives have no LLM step (`400`). Each file gets the steps it is still
+missing, so already analysed files are not described again. With `force: true` all
+steps run again.
+
+| Kind | Step 1: what we see (`summary`) | Step 2: what text is inside (`ocr`) |
+|---|---|---|
+| Image | description of the image | full transcription of visible text (see `llm.ocr_images`) |
+| Video | frames: first, every `video_frame_interval_secs` (default 60 s), last; described and merged | — |
+| PDF | description of the rendered first page | scanned PDFs (no text layer) only: every page transcribed, up to `llm.pdf_ocr_max_pages`; text PDFs already have their text via `pdftotext` |
+
+Other documents (text, code) keep `summary_status: pending` for future document summaries.
 
 For each item, the job:
 1. copies the file from the source into staging again (the path must still be inside
    a configured root);
-2. for images, applies EXIF rotation, downscales to `llm.image_max_edge` and sends a JPEG
-   to llama.cpp (`/v1/chat/completions`);
-3. for videos, samples the first frame, one frame every `llm.video_frame_interval_secs`
-   (default 60 s, widened for long videos so that `video_max_frames` covers the whole
-   duration) and the last frame (skipped if it is within 2 s of the previous sample), describes each frame
-   (stored with its timestamp), then merges the descriptions into one video summary;
-4. stores the summary, including people, objects, scene, visible text and tags, as
-   searchable text, and records every LLM call (model, prompt version, raw output,
+2. renders what the model should see: images get EXIF rotation and are downscaled
+   (`llm.image_max_edge` for descriptions, `llm.ocr_max_edge` for OCR, so small text stays
+   legible); PDF pages are rendered with `pdftoppm` at `llm.pdf_render_dpi`; video frames
+   are sampled with `ffmpeg`;
+3. sends them to llama.cpp (`/v1/chat/completions`);
+4. stores the description (people, objects, scene, visible text, tags) and the OCR text
+   as searchable text. Every LLM call is recorded (model, prompt version, raw output,
    latency, tokens, errors) in the `analyses` table for quality comparison.
 
-Documents are not supported yet (`400`).
+`ocr_images`: `auto` (default) transcribes an image only if its description reported
+visible text, which saves a ~45 s call per photo without text. `always` transcribes
+every image, `never` none. `ocr_status` per file is `done`, `none` (no text found),
+`failed`, `skipped` (`never`), or null (not run).
 
 ### `GET /health/llm`
 
@@ -131,14 +142,14 @@ so image and video analysis will fail.
 ```
 
 - **`text`** runs a BM25 full-text search over the file name, directory names, LLM summary,
-  document text, video frame descriptions and tags. It uses English stemming, so `fox`
+  document text, OCR text, video frame descriptions and tags. It uses English stemming, so `fox`
   also matches `foxes`, and stopwords are ignored.
 - All other keys filter on metadata. Values can be strings or numbers, and numeric
   and time fields also accept a range like `{"gte": .., "gt": .., "lte": .., "lt": .., "eq": ..}`.
 
 | Field | Match |
 |---|---|
-| `kind`, `extension`, `mime`, `root`, `doc_type`, `language`, `encoding`, `format`, `video_codec`, `audio_codec`, `compression`, `archive_format`, `summary_status`, `mode_str`, `sha256`, `id`, `tag` | exact, case-insensitive; a list means any of |
+| `kind`, `extension`, `mime`, `root`, `doc_type`, `language`, `encoding`, `format`, `video_codec`, `audio_codec`, `compression`, `archive_format`, `summary_status`, `ocr_status`, `mode_str`, `sha256`, `id`, `tag` | exact, case-insensitive; a list means any of |
 | `path`, `name`, `summary`, `container` | substring, case-insensitive |
 | `width`, `height` (image or video), `duration_secs`, `fps`, `size_bytes`, `page_count`, `uid`, `gid` | number or range |
 | `modified` (alias `mtime`), `created`, `indexed_at` | `"2024-05-01"` (whole day), RFC 3339 timestamp, or range |
@@ -146,7 +157,8 @@ so image and video analysis will fail.
 
 - An unknown field or invalid value returns `400`. `limit` defaults to 20 (max 200).
 - Each result contains the file metadata, `score`, and an `image`/`document`/`video`/`archive`
-  object depending on its kind. Documents return a 300-character `snippet`. For text
+  object depending on its kind. Documents return a 300-character `snippet`, and files with
+  recognised text return `ocr_text` (first 1000 characters). For text
   queries, videos list the `matched_frames` (timestamp and description).
 - `text_mode` is `fts`, or `substring` if the DuckDB FTS extension is unavailable.
 - The full-text index is rebuilt when an index or import job finishes. Files that a
@@ -245,7 +257,7 @@ tests/           integration tests
 ### LLM evaluation (llama.cpp, Qwen vision model, single slot)
 
 - About 50 s per image and about 55 s per video frame, dominated by output tokens
-  (roughly 1,700 images per day).
+  (roughly 1,700 images per day). Images with text need a second (OCR) call.
 - Videos: 1 frame per 60 s plus the first and last frame, so a 10-minute video takes
   11 frames, roughly 10 minutes.
 - Prompt v1 hit the output limit on crowds and code screenshots. Prompt v2 (at most 6
@@ -261,7 +273,6 @@ tests/           integration tests
 - Document summaries through the LLM (`/import_media` with `kind: ["document"]`,
   chunking long documents)
 - Office documents (docx/xlsx/pptx); archive content listings (file names inside zip/tar)
-- OCR for scanned PDFs (no text layer), e.g. render pages and send them to the vision model
 - `people_count` as a search filter, since a text query like "person" misses many images
 - Tagging API (`POST /files/{id}/tags`, `DELETE /files/{id}/tags/{tag}`); `tag` is
   already a search field

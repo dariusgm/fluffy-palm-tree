@@ -38,3 +38,10 @@ image_max_edge = 1024
 # One frame per interval; the first and last frame of a video are always included.
 video_frame_interval_secs = 60
 video_max_frames = 120
+# Text recognition: images get a second LLM call that transcribes all visible text.
+# "auto" = only if the description found text, "always", or "never".
+ocr_images = "auto"
+ocr_max_edge = 1600
+# Scanned PDFs (no text layer) are transcribed page by page, up to this many pages.
+pdf_ocr_max_pages = 20
+pdf_render_dpi = 150

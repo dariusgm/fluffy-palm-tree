@@ -1,6 +1,7 @@
 pub mod document;
 pub mod frames;
 pub mod image;
+pub mod pdf_pages;
 pub mod prepare;
 pub mod video;
 

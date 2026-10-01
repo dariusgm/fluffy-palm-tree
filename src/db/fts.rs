@@ -9,7 +9,8 @@ pub const BODY_SQL: &str = r#"concat_ws(' ',
     f.summary,
     d.content,
     (SELECT string_agg(vf.description, ' ') FROM video_frames vf WHERE vf.file_id = f.id),
-    (SELECT string_agg(t.tag, ' ') FROM tags t WHERE t.file_id = f.id))"#;
+    (SELECT string_agg(t.tag, ' ') FROM tags t WHERE t.file_id = f.id),
+    (SELECT string_agg(o.text, ' ' ORDER BY o.page) FROM ocr o WHERE o.file_id = f.id))"#;
 
 /// Rebuilds `search_docs` and its BM25 index. DuckDB FTS indexes are static, so this
 /// must run after data changes (end of index/import jobs, startup).
