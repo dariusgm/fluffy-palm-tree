@@ -1,6 +1,6 @@
 # Phase 3: `/index` and the job system
 
-**Status:** todo
+**Status:** done
 
 ## Goal
 `POST /index {"path": "...", "traverse": true}` starts a background job that walks the
@@ -44,17 +44,34 @@ be polled.
   duration, first video stream (width, height, codec_name, avg_frame_rate),
   first audio codec, format_name, bit_rate.
   Types: mp4, mkv, mov, webm, avi, m4v.
-- External tools are invoked with argument vectors (never a shell), and paths are
-  passed after `--` where supported.
+- External tools are invoked with argument vectors (never a shell). Paths are always
+  absolute (canonicalized or in staging), so they can never be parsed as options.
 
 ## Checklist
-- [ ] Crates: `walkdir`, `infer`, `imagesize`, `sha2`, `hex`, `tokio-util`
-- [ ] `src/staging.rs`: copy + hash, `StagedFile` drop guard, byte budget
-- [ ] `src/detect.rs`: file kind and doc type detection
-- [ ] `src/extract/{image,document,video}.rs`
-- [ ] `src/jobs.rs` + `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}`
-- [ ] `src/pipelines/index.rs` + `POST /index` (`traverse` defaults to `true`)
-- [ ] Startup: mark stale running jobs as `interrupted`, clean leftover staging files
-- [ ] Tests: generated PNG, text and markdown files; ffmpeg `testsrc` video if ffmpeg is
+- [x] Crates: `walkdir`, `infer`, `imagesize`, `sha2`, `hex`, `tokio-util`
+- [x] `src/staging.rs`: copy + hash, `StagedFile` drop guard, byte budget
+- [x] `src/detect.rs`: file kind and doc type detection
+- [x] `src/extract/{image,document,video}.rs`
+- [x] `src/jobs.rs` + `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}`
+- [x] `src/pipelines/index.rs` + `POST /index` (`traverse` defaults to `true`)
+- [x] Startup: mark stale running jobs as `interrupted`, clean leftover staging files
+- [x] Tests: generated PNG, text and markdown files; ffmpeg `testsrc` video if ffmpeg is
       available (skip otherwise); `traverse=false`; path outside roots → 403; re-index skips unchanged files
-- [ ] Update README (API status) and tasks/README.md
+- [x] Update README (API status) and tasks/README.md
+
+## Implementation notes
+- `skipped` counts unchanged files (same size and mtime) and files above `max_file_bytes`.
+  Too-large files are stored with `summary_status = 'skipped'` and no detail row.
+- Extraction failures store nothing, so the next `/index` run retries them. They count
+  as `failed`, and the last 50 errors are returned in `recent_errors` (persisted via
+  migration 2). Walk errors such as permission denied appear in `recent_errors` without
+  counting as `failed`.
+- `resolve_in_roots` returns 403 for non-existent paths outside the roots, so clients
+  cannot probe which paths exist on the host.
+- Staged files are named `ms-<uuid>.<ext>`. Startup cleanup only deletes `ms-*` entries
+  in `staging.dir`.
+- mtime is truncated to microseconds so the stored value compares equal on re-index.
+- Non-UTF-8 paths fail with an error (mount CIFS with `iocharset=utf8`).
+- The FTS rebuild at the end of the job is added in phase 4.
+- The video integration test is skipped when `ffmpeg` is not installed. Run it again
+  after `sudo apt install ffmpeg`.

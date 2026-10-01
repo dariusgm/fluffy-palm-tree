@@ -65,8 +65,15 @@ pub fn resolve_in_roots(roots: &[RootConfig], requested: &Path) -> Result<Resolv
     if !requested.is_absolute() {
         return Err(ApiError::BadRequest("path must be absolute".into()));
     }
-    let canonical = std::fs::canonicalize(requested)
-        .map_err(|e| ApiError::BadRequest(format!("path not accessible: {e}")))?;
+    let canonical = match std::fs::canonicalize(requested) {
+        Ok(p) => p,
+        // Only report "not accessible" for paths under a root, so clients cannot
+        // probe which paths exist elsewhere on the host.
+        Err(e) if roots.iter().any(|r| requested.starts_with(&r.path)) => {
+            return Err(ApiError::BadRequest(format!("path not accessible: {e}")));
+        }
+        Err(_) => return Err(forbidden()),
+    };
 
     for root in roots {
         let Ok(root_canon) = std::fs::canonicalize(&root.path) else {
@@ -81,9 +88,11 @@ pub fn resolve_in_roots(roots: &[RootConfig], requested: &Path) -> Result<Resolv
             });
         }
     }
-    Err(ApiError::Forbidden(
-        "path is not inside a configured index root".into(),
-    ))
+    Err(forbidden())
+}
+
+fn forbidden() -> ApiError {
+    ApiError::Forbidden("path is not inside a configured index root".into())
 }
 
 #[cfg(test)]

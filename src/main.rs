@@ -17,7 +17,19 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load()?;
     let bind = config.server.bind;
     let db = Db::open(&config.database.path)?;
-    let state = AppState::new(config, db);
+    let state = AppState::new(config, db)?;
+
+    let removed = state.staging.cleanup_leftovers()?;
+    if removed > 0 {
+        tracing::info!(removed, "removed leftover staging files");
+    }
+    let interrupted = state.jobs.mark_interrupted().await?;
+    if interrupted > 0 {
+        tracing::warn!(
+            interrupted,
+            "marked jobs from a previous run as interrupted"
+        );
+    }
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await

@@ -2,7 +2,8 @@ use anyhow::Context;
 use duckdb::{Connection, params};
 
 /// Ordered migrations. Never edit an applied entry; append a new one instead.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE files (
     id             TEXT PRIMARY KEY,
     root           TEXT NOT NULL,
@@ -85,7 +86,11 @@ CREATE TABLE tags (
     source  TEXT,
     PRIMARY KEY (file_id, tag)
 );
-"#];
+"#,
+    r#"
+ALTER TABLE jobs ADD COLUMN recent_errors JSON;
+"#,
+];
 
 pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")?;

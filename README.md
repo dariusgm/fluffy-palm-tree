@@ -44,8 +44,8 @@ client ──► axum (private-network allowlist)
 | Endpoint | Status |
 |---|---|
 | `GET /health` | implemented |
-| `POST /index` | planned (phase 3) |
-| `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}` | planned (phase 3) |
+| `POST /index` | implemented |
+| `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}` | implemented |
 | `POST /search` | planned (phase 4) |
 | `POST /import_media` | planned (phase 5) |
 | `GET /health/llm` | planned (phase 5) |
@@ -77,8 +77,15 @@ For videos, one frame is sampled every `video_frame_interval_secs` (default 10 s
 ### `GET /jobs/{id}`
 
 ```json
-{ "id": "...", "kind": "index", "status": "running", "found": 1200, "processed": 850, "failed": 2, "skipped": 300 }
+{ "id": "...", "kind": "index", "status": "running", "params": { "path": "...", "traverse": true },
+  "found": 1200, "processed": 850, "failed": 2, "skipped": 300,
+  "started_at": "...", "finished_at": null, "error": null,
+  "recent_errors": [ { "path": "/mnt/share/x/broken.png", "error": "..." } ] }
 ```
+- `status` is one of `running | completed | failed | cancelled | interrupted`.
+- `skipped` counts unchanged files and files above `staging.max_file_bytes`.
+- `GET /jobs` lists the last 100 jobs. `DELETE /jobs/{id}` cancels a running job
+  (`202`), or returns `409` if the job has already finished.
 
 ## Getting started
 
@@ -116,6 +123,11 @@ src/
   error.rs       API error type
   state.rs       shared application state
   db/            DuckDB handle, migrations, models/upserts
+  jobs.rs        background job registry (counters, cancel, persistence)
+  staging.rs     copy-to-staging with hashing, byte budget, auto-cleanup
+  detect.rs      file kind / doc type / MIME detection
+  extract/       metadata extractors (image header, text/pdftotext, ffprobe)
+  pipelines/     job implementations (index)
   api/           HTTP handlers
 tests/           integration tests
 tasks/           phase plans and progress (start here when resuming work)

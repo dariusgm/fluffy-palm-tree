@@ -1,8 +1,10 @@
 mod health;
+mod index;
+mod jobs;
 
 use axum::Router;
 use axum::middleware;
-use axum::routing::get;
+use axum::routing::{get, post};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
@@ -15,6 +17,9 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health::health))
+        .route("/index", post(index::start_index))
+        .route("/jobs", get(jobs::list))
+        .route("/jobs/{id}", get(jobs::get).delete(jobs::cancel))
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(max_body))
         .layer(middleware::from_fn_with_state(allow, ip_allowlist))
