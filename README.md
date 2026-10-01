@@ -46,7 +46,8 @@ File types are detected by content (magic bytes), not by extension, so a PNG nam
 - **Videos:** anything with a video signature (MP4, MOV, MKV, WebM, AVI, OGV, ...).
 - **PDF.**
 - **Archives:** gzip, bzip2, xz, zstd, lz4, lzip, compress, zip, 7z, rar, tar. A tar
-  inside gzip is detected from the decompressed start of the file.
+  inside gzip is detected from the decompressed start of the file. Zip-based formats with
+  their own type (office documents, EPUB, JAR, ...) are not archives.
 - **Text documents:** every other file that reads as text (UTF-8, UTF-16 with BOM, or
   8-bit legacy encodings). Source code, markup and config files get `doc_type: code`
   and a `language` (from the extension, the file name such as `Dockerfile`, or a shebang
@@ -195,6 +196,26 @@ cargo run --release
 curl http://127.0.0.1:8080/health
 ```
 
+## Estimating the work for a share
+
+`scripts/estimate_share.py` (Python 3, standard library only) scans a directory tree
+before indexing and estimates the work. It only reads the directory structure and
+classifies files by extension, so it is fast even over SMB. With `--video-durations`,
+`ffprobe` reads video headers to count the frames that will be sampled.
+
+```bash
+scripts/estimate_share.py /mnt/share/photos --video-durations --sec-per-call 45
+scripts/estimate_share.py /mnt/share --max-depth 1          # like traverse=false
+scripts/estimate_share.py /mnt/share --json > estimate.json
+```
+
+It prints files and sizes per category, ignored types, video hours and frames, and a
+range of LLM calls: the max assumes every image contains text (OCR call), and scanned
+PDF pages are not included. The service detects types by content, so the numbers are
+close but not exact; for example, extensionless text files and zip-based formats such
+as `.sh3d` are only recognised by the service. Measured averages on the reference
+hardware: about 45–50 s per image or video-frame call, 26 s per text/code summary.
+
 ## Development
 
 Every step must pass these checks before it is committed:
@@ -230,6 +251,7 @@ src/
   search/        JSON query → parameterized SQL, result mapping
   api/           HTTP handlers
 tests/           integration tests
+scripts/         helper scripts (work estimate for a share)
 ```
 
 ### Design decisions
