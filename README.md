@@ -115,6 +115,7 @@ src/
   security.rs    IP allowlist middleware, index-root validation
   error.rs       API error type
   state.rs       shared application state
+  db/            DuckDB handle, migrations, models/upserts
   api/           HTTP handlers
 tests/           integration tests
 tasks/           phase plans and progress (start here when resuming work)

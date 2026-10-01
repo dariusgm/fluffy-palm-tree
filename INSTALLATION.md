@@ -38,6 +38,10 @@ rustup component add clippy rustfmt
 
 The first build compiles DuckDB from source, which takes a few minutes.
 
+On first start the service runs `INSTALL fts`, which downloads DuckDB's full-text-search
+extension once into `~/.duckdb/extensions`. If the machine has no internet access,
+text search falls back to slower substring matching.
+
 ## 3. Mount the SMB shares
 
 The service only reads local paths, so mount every share with CIFS and add the

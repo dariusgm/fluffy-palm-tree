@@ -7,7 +7,7 @@ first, then the first phase that is not `done`.
 | Phase | File | Status |
 |---|---|---|
 | 1 | [01-scaffold.md](01-scaffold.md) | done |
-| 2 | [02-database.md](02-database.md) | todo |
+| 2 | [02-database.md](02-database.md) | done |
 | 3 | [03-index.md](03-index.md) | todo |
 | 4 | [04-search.md](04-search.md) | todo |
 | 5 | [05-import-media.md](05-import-media.md) | todo |

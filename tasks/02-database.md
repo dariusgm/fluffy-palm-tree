@@ -1,6 +1,6 @@
 # Phase 2: Database layer
 
-**Status:** todo
+**Status:** done
 
 ## Goal
 DuckDB schema, migrations on startup, and safe concurrent access from async code.
@@ -40,11 +40,22 @@ tags(file_id UUID, tag TEXT, source TEXT, PK(file_id, tag))
 - `kind` values are `image | document | video`.
 
 ## Checklist
-- [ ] Add the `duckdb` (bundled), `uuid`, `chrono` crates
-- [ ] `src/db/mod.rs`: `Db` handle (open, migrate, `call(|conn| ...)` helper via spawn_blocking)
-- [ ] `src/db/schema.rs`: migrations
-- [ ] `src/db/models.rs`: `FileRecord`, `ImageMeta`, `DocumentMeta`, `VideoMeta`, upsert functions
-- [ ] Wire `Db` into `AppState`, open it on startup
-- [ ] Tests: migrate on a temp DB is idempotent; an upsert by `(root, rel_path)` updates
+- [x] Add the `duckdb` (bundled), `uuid`, `chrono` crates
+- [x] `src/db/mod.rs`: `Db` handle (open, migrate, `call(|conn| ...)` helper via spawn_blocking)
+- [x] `src/db/schema.rs`: migrations
+- [x] `src/db/models.rs`: `FileRecord`, `ImageMeta`, `DocumentMeta`, `VideoMeta`, `save_indexed`, `find_stat`
+- [x] Wire `Db` into `AppState`, open it on startup
+- [x] Tests: migrate on a temp DB is idempotent; an upsert by `(root, rel_path)` updates
       in place and keeps the `id`
-- [ ] Update README (layout) and tasks/README.md
+- [x] Update README (layout) and tasks/README.md
+
+## Implementation notes
+- IDs are stored as `TEXT` (UUID v4 strings) to avoid UUID type mapping issues.
+- `save_indexed` upserts the file, deletes all detail rows (images/documents/videos/
+  video_frames) for that id and inserts the new ones, all in one transaction. Re-indexing
+  resets `summary` to `''`.
+- The FTS extension is not part of the bundled build. `Db::init` runs `INSTALL fts; LOAD fts;`
+  (downloads once to `~/.duckdb/extensions`). If that fails, `Db::fts_available()` is
+  `false` and search must fall back to `ILIKE`.
+- One `Mutex<Connection>` serializes all access. If search latency during big index jobs
+  becomes a problem, add a second read connection via `try_clone()`.

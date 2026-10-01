@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 use anyhow::Context;
 use media_search::config::Config;
+use media_search::db::Db;
 use media_search::{AppState, router};
 use tracing_subscriber::EnvFilter;
 
@@ -15,7 +16,8 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::load()?;
     let bind = config.server.bind;
-    let state = AppState::new(config);
+    let db = Db::open(&config.database.path)?;
+    let state = AppState::new(config, db);
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await
