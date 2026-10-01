@@ -92,8 +92,13 @@ Image and video analysis need a **vision-capable** model. `llama-server` must be
 started with the model's multimodal projector:
 
 ```bash
-llama-server -m MODEL.gguf --mmproj MMPROJ.gguf --host 0.0.0.0 --port 8080 -c 16384
+llama-server -m MODEL.gguf --mmproj MMPROJ.gguf --host 0.0.0.0 --port 8080 -c 32768
+# or, downloading from Hugging Face including the projector:
+llama-server -hf <user>/<repo>:<quant> --mmproj-auto --host 0.0.0.0 --port 8080 -c 32768
 ```
+
+llama-server listens on `127.0.0.1` by default, so `--host 0.0.0.0` is required for
+access from another machine. `GET /health/llm` on this service must report `"vision": true`.
 
 Check it from the search host with `curl http://LLM_HOST:8080/v1/models`.
 

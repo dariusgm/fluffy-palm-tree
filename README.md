@@ -6,8 +6,8 @@ Metadata goes into a local [DuckDB](https://duckdb.org) database, and a local
 [llama.cpp](https://github.com/ggml-org/llama.cpp) vision model describes the content
 of images and videos, so everything stays searchable by text.
 
-> Status: work in progress. See [`tasks/`](tasks/README.md) for what is implemented
-> and what comes next.
+> Status: all planned features are implemented and verified against a live llama.cpp
+> vision model. Future work is listed under [Roadmap](#roadmap).
 
 ## How it works
 
@@ -47,7 +47,7 @@ client ──► axum (private-network allowlist)
 | `POST /index` | implemented |
 | `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}` | implemented |
 | `POST /search` | implemented |
-| `POST /import_media` | implemented (tested against a mocked LLM) |
+| `POST /import_media` | implemented |
 | `GET /health/llm` | implemented |
 
 ### `POST /index`
@@ -179,8 +179,57 @@ src/
   search/        JSON query → parameterized SQL, result mapping
   api/           HTTP handlers
 tests/           integration tests
-tasks/           phase plans and progress (start here when resuming work)
 ```
+
+### Design decisions
+
+- SMB shares are mounted on the host (CIFS or GVFS) and configured as `[[roots]]`. The
+  service only sees local paths, and files are identified by `(root name, relative path)`.
+- Video and PDF tooling are system binaries (`ffprobe`, `ffmpeg`, `pdftotext`),
+  always called with argument vectors, never through a shell.
+- DuckDB is accessed through one mutex-protected connection on the blocking thread
+  pool (DuckDB has a single writer). Schema changes are append-only migrations in
+  `src/db/schema.rs`.
+- DuckDB FTS indexes are static. The `search_docs` table and its BM25 index are rebuilt
+  at startup and after every index and import job. The tokenizer keeps digits, so
+  invoice numbers are searchable.
+- Every LLM call is stored in `analyses` with its prompt version (`src/llm/prompts.rs`).
+  Bump the version when changing a prompt, then compare runs with SQL, e.g.
+  `SELECT prompt_version, count(*), avg(latency_ms), count(error) FROM analyses GROUP BY 1`.
+- The LLM is asked for JSON (summary, people, people_count, objects, scene, visible
+  text, tags), and the answer is flattened into searchable text with one labelled line
+  per person. The model is told never to guess identities. People can be found through
+  their description and through visible name tags.
+
+### LLM evaluation (llama.cpp, Qwen vision model, single slot)
+
+- About 50 s per image and about 55 s per video frame, dominated by output tokens
+  (roughly 1,700 images per day).
+- Videos: 1 frame per 60 s plus the first and last frame, so a 10-minute video takes
+  11 frames, roughly 10 minutes.
+- Prompt v1 hit the output limit on crowds and code screenshots. Prompt v2 (at most 6
+  listed people, crowds as one entry, bounded text) produced valid JSON for every call
+  in the test set.
+- `image_max_edge = 1024` keeps name tags and UI text readable. Lowering it saves
+  little, because image tokens are not the bottleneck.
+- llama-server must run with a vision projector (`--mmproj ...` or `-hf ... --mmproj-auto`).
+  `GET /health/llm` reports `vision: false` otherwise.
+
+## Roadmap
+
+- Document summaries through the LLM (`/import_media` with `kind: ["document"]`,
+  chunking long documents)
+- Office documents (docx/xlsx/pptx)
+- `people_count` as a search filter, since a text query like "person" misses many images
+- Tagging API (`POST /files/{id}/tags`, `DELETE /files/{id}/tags/{tag}`); `tag` is
+  already a search field
+- Person search beyond descriptions: face detection and embeddings (e.g. ONNX model plus
+  DuckDB `vss`), clustered into named persons through tags
+- HEIC/RAW images, EXIF metadata (capture date, camera; GPS optional)
+- Mark files deleted at the source during re-index
+- Re-derive `files.summary` from stored `analyses.parsed` when the flattening changes
+- Configurable FTS language (e.g. German), periodic FTS rebuilds during long jobs
+- Optional API token in addition to the IP allowlist; systemd unit file
 
 ## Public repository hygiene
 
