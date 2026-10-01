@@ -23,6 +23,13 @@ async fn main() -> anyhow::Result<()> {
     if removed > 0 {
         tracing::info!(removed, "removed leftover staging files");
     }
+    let requeued = state
+        .db
+        .call(|c| media_search::db::media::reset_running(c))
+        .await?;
+    if requeued > 0 {
+        tracing::warn!(requeued, "reset media items left running by a previous run");
+    }
     let interrupted = state.jobs.mark_interrupted().await?;
     if interrupted > 0 {
         tracing::warn!(

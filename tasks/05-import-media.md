@@ -1,6 +1,6 @@
 # Phase 5: `/import_media` (LLM content extraction, mocked)
 
-**Status:** todo
+**Status:** done (mocked; live test is phase 6)
 
 ## Goal
 Background job that sends images and video frames to llama.cpp and stores content
@@ -49,10 +49,27 @@ All fields are optional. Default: all images and videos with `summary_status = '
 - Use `llm.workers` concurrent items (default 1).
 
 ## Checklist
-- [ ] Crates: `reqwest` (json, rustls), `base64`, `image`, dev `wiremock`
-- [ ] `src/llm/{client,prompts}.rs` with unit tests (think-stripping, JSON parsing, fallback)
-- [ ] `src/extract/frames.rs` (ffmpeg frame sampling)
-- [ ] `src/pipelines/import_media.rs` + `POST /import_media`
-- [ ] `GET /health/llm`
-- [ ] Integration test with wiremock: index a generated PNG, import, then search finds the mocked description
-- [ ] Update README and tasks/README.md
+- [x] Crates: `reqwest` (json, rustls), `base64`, `image`, dev `wiremock`
+- [x] `src/llm/{client,prompts}.rs` with unit tests (think-stripping, JSON parsing, fallback)
+- [x] `src/extract/frames.rs` (ffmpeg frame sampling)
+- [x] `src/pipelines/import_media.rs` + `POST /import_media`
+- [x] `GET /health/llm`
+- [x] Integration test with wiremock: index a generated PNG, import, then search finds the mocked description
+- [x] Update README and tasks/README.md
+
+## Implementation notes
+- Requests send `response_format: {"type": "json_object"}` and
+  `chat_template_kwargs.enable_thinking = false`. If the live server rejects either,
+  remove it in `src/llm/client.rs`.
+- `files.summary` holds flattened text (summary, people, objects, tags, scene, visible
+  text), which is better for FTS than raw JSON. The raw JSON is in `analyses.parsed`.
+- Each frame is one `analyses` row with `ts_secs` (migration 3). The merge call has `ts_secs = NULL`.
+- The frame interval is `max(video_frame_interval_secs, duration / video_max_frames)`.
+- A failed frame is logged in `recent_errors` and the video continues. The video only
+  fails if no frame could be described or the merge call fails.
+- On cancel, the current item goes back to `pending`. On startup, items left `running` are reset to `pending`.
+- Default selection is `pending` only. `force` adds `done` and `failed`. `skipped`
+  (too large) and `running` items are never selected.
+- The video test is skipped without `ffmpeg`, so the ffmpeg frame extraction
+  (`src/extract/frames.rs`) has **not been run yet**. After `sudo apt install ffmpeg`,
+  run `cargo test` before the live LLM test.

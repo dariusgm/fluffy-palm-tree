@@ -5,6 +5,7 @@ pub mod detect;
 pub mod error;
 pub mod extract;
 pub mod jobs;
+pub mod llm;
 pub mod pipelines;
 pub mod search;
 pub mod security;

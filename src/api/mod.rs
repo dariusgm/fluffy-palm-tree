@@ -1,4 +1,5 @@
 mod health;
+mod import_media;
 mod index;
 mod jobs;
 mod search;
@@ -18,7 +19,9 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health::health))
+        .route("/health/llm", get(health::llm))
         .route("/index", post(index::start_index))
+        .route("/import_media", post(import_media::start_import))
         .route("/search", post(search::search))
         .route("/jobs", get(jobs::list))
         .route("/jobs/{id}", get(jobs::get).delete(jobs::cancel))

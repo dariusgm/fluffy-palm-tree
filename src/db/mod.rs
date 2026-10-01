@@ -1,4 +1,5 @@
 pub mod fts;
+pub mod media;
 pub mod models;
 mod schema;
 

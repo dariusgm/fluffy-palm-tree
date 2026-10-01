@@ -1,5 +1,7 @@
 pub mod document;
+pub mod frames;
 pub mod image;
+pub mod prepare;
 pub mod video;
 
 use std::ffi::OsStr;

@@ -90,6 +90,9 @@ CREATE TABLE tags (
     r#"
 ALTER TABLE jobs ADD COLUMN recent_errors JSON;
 "#,
+    r#"
+ALTER TABLE analyses ADD COLUMN ts_secs DOUBLE;
+"#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {

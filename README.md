@@ -47,8 +47,8 @@ client ──► axum (private-network allowlist)
 | `POST /index` | implemented |
 | `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}` | implemented |
 | `POST /search` | implemented |
-| `POST /import_media` | planned (phase 5) |
-| `GET /health/llm` | planned (phase 5) |
+| `POST /import_media` | implemented (tested against a mocked LLM) |
+| `GET /health/llm` | implemented |
 
 ### `POST /index`
 
@@ -61,10 +61,31 @@ are indexed. The response is `202` with `{ "job_id": "...", "status_url": "/jobs
 ### `POST /import_media`
 
 ```json
-{ "kind": ["image", "video"], "path_prefix": "/mnt/share/photos", "limit": 50, "force": false }
+{}
+{ "kind": ["image", "video"], "path_prefix": "/mnt/share/photos", "ids": [], "limit": 50, "force": false }
 ```
-All fields are optional. It processes items whose summary is still pending.
-For videos, one frame is sampled every `video_frame_interval_secs` (default 10 s).
+All fields are optional (send `{}` for the defaults). The job processes images and
+videos whose summary is still `pending`. With `force: true` it also re-processes
+`done` and `failed` items.
+
+For each item, the job:
+1. copies the file from the source into staging again (the path must still be inside
+   a configured root);
+2. for images, applies EXIF rotation, downscales to `llm.image_max_edge` and sends a JPEG
+   to llama.cpp (`/v1/chat/completions`);
+3. for videos, samples one frame every `llm.video_frame_interval_secs` (widened for long
+   videos so that `video_max_frames` covers the whole duration), describes each frame
+   (stored with its timestamp), then merges the descriptions into one video summary;
+4. stores the summary, including people, objects, scene, visible text and tags, as
+   searchable text, and records every LLM call (model, prompt version, raw output,
+   latency, tokens, errors) in the `analyses` table for quality comparison.
+
+Documents are not supported yet (`400`).
+
+### `GET /health/llm`
+
+Checks llama.cpp via `/v1/models`. Returns `200 {"reachable": true, "configured_model_loaded": ..., "models": [...]}`
+or `503` with the error.
 
 ### `POST /search`
 
@@ -148,8 +169,10 @@ src/
   jobs.rs        background job registry (counters, cancel, persistence)
   staging.rs     copy-to-staging with hashing, byte budget, auto-cleanup
   detect.rs      file kind / doc type / MIME detection
-  extract/       metadata extractors (image header, text/pdftotext, ffprobe)
-  pipelines/     job implementations (index)
+  extract/       metadata extractors (image header, text/pdftotext, ffprobe),
+                 frame sampling (ffmpeg), image preparation for the LLM
+  pipelines/     job implementations (index, import_media)
+  llm/           llama.cpp client, versioned prompts, JSON parsing
   search/        JSON query → parameterized SQL, result mapping
   api/           HTTP handlers
 tests/           integration tests
