@@ -311,8 +311,20 @@ scripts/         helper scripts (work estimate for a share)
 - Prompt v1 hit the output limit on crowds and code screenshots. Prompt v2 (at most 6
   listed people, crowds as one entry, bounded text) produced valid JSON for every call
   in the test set.
-- `image_max_edge = 1024` keeps name tags and UI text readable. Lowering it saves
-  little, because image tokens are not the bottleneck.
+- Image size (20 photos from the share, single slot; the judge is the LLM rating how
+  consistent two descriptions are, 1-5):
+
+  | `image_max_edge` | s per image | prompt tokens | judge vs 1536 |
+  |---|---|---|---|
+  | 1536 | 81 | 2023 | (reference) |
+  | 1024 | 56 | 1111 | 4.5 |
+  | 768 | 63 | 794 | 4.3 |
+  | 512 | 56 | 563 | 3.95 |
+
+  Running 1024 twice (different file bytes, same pixels) is rated only 3.9 against itself,
+  so the differences between 512 and 1536 are within the model's own noise (sampling
+  temperature 0.2). Time is dominated by the ~350 output tokens, so smaller images save
+  nothing below 1024, while 1536 costs 45% more. `image_max_edge = 1024` is the default.
 - Parallel requests (`llama-server --parallel N`, `llm.workers = N`) gain little on this
   hardware: 17 new images took 981 s with 1 worker, 814 s with 2 (+20%) and 872 s with 4.
   (Benchmarks that resend the same images look much faster because llama.cpp caches the
