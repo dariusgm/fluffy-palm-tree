@@ -57,6 +57,18 @@ impl LlmClient {
         }
     }
 
+    /// Whether llama.cpp accepts image input (`/props` → `modalities.vision`).
+    /// `None` if the server does not expose it (e.g. not llama.cpp).
+    pub async fn vision_supported(&self) -> Option<bool> {
+        let resp = self
+            .request(reqwest::Method::GET, "/props")
+            .send()
+            .await
+            .ok()?;
+        let body: Value = resp.json().await.ok()?;
+        body["modalities"]["vision"].as_bool()
+    }
+
     pub async fn models(&self) -> anyhow::Result<Value> {
         let resp = self
             .request(reqwest::Method::GET, "/v1/models")

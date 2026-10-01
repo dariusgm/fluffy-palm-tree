@@ -21,6 +21,7 @@ pub async fn llm(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
                         .collect()
                 })
                 .unwrap_or_default();
+            let vision = state.llm.vision_supported().await;
             (
                 StatusCode::OK,
                 Json(json!({
@@ -28,6 +29,7 @@ pub async fn llm(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
                     "configured_model": configured,
                     "configured_model_loaded": available.contains(&configured),
                     "models": available,
+                    "vision": vision,
                 })),
             )
         }

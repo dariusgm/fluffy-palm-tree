@@ -84,8 +84,10 @@ Documents are not supported yet (`400`).
 
 ### `GET /health/llm`
 
-Checks llama.cpp via `/v1/models`. Returns `200 {"reachable": true, "configured_model_loaded": ..., "models": [...]}`
-or `503` with the error.
+Checks llama.cpp via `/v1/models` and `/props`. Returns
+`200 {"reachable": true, "configured_model_loaded": ..., "models": [...], "vision": true|false|null}`
+or `503` with the error. `vision: false` means llama-server was started without `--mmproj`,
+so image and video analysis will fail.
 
 ### `POST /search`
 

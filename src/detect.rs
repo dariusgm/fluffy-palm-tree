@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::db::models::{DocType, FileKind};
 
 const IMAGE_EXT: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "tif", "tiff"];
-const VIDEO_EXT: &[&str] = &["mp4", "mkv", "mov", "webm", "avi", "m4v"];
+const VIDEO_EXT: &[&str] = &["mp4", "mkv", "mov", "webm", "avi", "m4v", "ogv"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Detected {
@@ -53,6 +53,7 @@ pub fn sniff_mime(path: &Path, detected: Detected) -> Option<String> {
         (FileKind::Video, _, "mkv") => "video/x-matroska",
         (FileKind::Video, _, "mov") => "video/quicktime",
         (FileKind::Video, _, "avi") => "video/x-msvideo",
+        (FileKind::Video, _, "ogv") => "video/ogg",
         (FileKind::Video, _, e) => return Some(format!("video/{e}")),
         _ => return None,
     };
@@ -67,6 +68,7 @@ mod tests {
     fn detects_by_extension_case_insensitive() {
         assert_eq!(detect(Path::new("a/B.JPG")).unwrap().kind, FileKind::Image);
         assert_eq!(detect(Path::new("v.mkv")).unwrap().kind, FileKind::Video);
+        assert_eq!(detect(Path::new("v.OGV")).unwrap().kind, FileKind::Video);
         let d = detect(Path::new("x.md")).unwrap();
         assert_eq!(d.kind, FileKind::Document);
         assert_eq!(d.doc_type, Some(DocType::Markdown));

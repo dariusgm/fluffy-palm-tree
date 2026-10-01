@@ -200,11 +200,19 @@ async fn llm_health() {
         )
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/props"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "modalities": { "vision": false } })),
+        )
+        .mount(&server)
+        .await;
     let env = env_with_llm(&server).await;
     let (status, body) = env.call(get("/health/llm")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["reachable"], true);
     assert_eq!(body["configured_model_loaded"], true);
+    assert_eq!(body["vision"], false);
 
     let down = TestEnv::with_config(|c| c.llm.base_url = "http://127.0.0.1:9".into());
     let (status, body) = down.call(get("/health/llm")).await;

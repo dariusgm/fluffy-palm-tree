@@ -43,7 +43,7 @@ be polled.
 - `video.rs`: `ffprobe -v error -print_format json -show_format -show_streams`. Parse
   duration, first video stream (width, height, codec_name, avg_frame_rate),
   first audio codec, format_name, bit_rate.
-  Types: mp4, mkv, mov, webm, avi, m4v.
+  Types: mp4, mkv, mov, webm, avi, m4v, ogv.
 - External tools are invoked with argument vectors (never a shell). Paths are always
   absolute (canonicalized or in staging), so they can never be parsed as options.
 
