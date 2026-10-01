@@ -1,0 +1,39 @@
+# Copy to config.toml (gitignored) and adapt. Never commit config.toml.
+# The config path can be overridden with MEDIA_SEARCH_CONFIG=/path/to/config.toml.
+
+[server]
+bind = "0.0.0.0:8080"
+# Clients outside these networks get 403.
+allowed_cidrs = ["192.168.0.0/16", "127.0.0.1/32"]
+max_body_bytes = 65536
+
+[database]
+path = "./data/search.duckdb"
+
+[staging]
+dir = "./data/staging"
+# Index/import workers wait when the staging dir would exceed this size.
+max_bytes = 20_000_000_000
+# Files larger than this are recorded but not copied/analysed.
+max_file_bytes = 10_000_000_000
+index_workers = 4
+# true: copy each file into staging before extracting metadata (default).
+# false: read metadata directly from the source (much faster on SMB for large videos).
+copy_on_index = true
+
+# Allowed starting points for /index. Requests outside these roots are rejected.
+# SMB shares should be mounted via CIFS (see INSTALLATION.md) and listed by mount point.
+[[roots]]
+name = "example"
+path = "/mnt/share/example"
+
+[llm]
+# Can be overridden with MEDIA_SEARCH_LLM_URL.
+base_url = "http://LLM_HOST:8080"
+model = "your-model-name"
+# api_key = ""            # optional, or MEDIA_SEARCH_LLM_API_KEY
+timeout_secs = 600
+workers = 1
+image_max_edge = 1024
+video_frame_interval_secs = 10
+video_max_frames = 120

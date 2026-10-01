@@ -1,0 +1,135 @@
+# media-search
+
+A self-hosted search service for documents, images, PDFs and videos on local disks
+and SMB network shares. It is written in Rust with [axum](https://github.com/tokio-rs/axum).
+Metadata goes into a local [DuckDB](https://duckdb.org) database, and a local
+[llama.cpp](https://github.com/ggml-org/llama.cpp) vision model describes the content
+of images and videos, so everything stays searchable by text.
+
+> Status: work in progress. See [`tasks/`](tasks/README.md) for what is implemented
+> and what comes next.
+
+## How it works
+
+```
+client ──► axum (private-network allowlist)
+             ├─ POST /index         → job: walk tree → copy to staging → extract metadata → DuckDB
+             ├─ POST /import_media  → job: copy to staging → frames/resize → llama.cpp → DuckDB
+             ├─ POST /search        → DuckDB full-text + metadata filters
+             └─ GET  /jobs/{id}     → progress (found / processed / failed / skipped)
+```
+
+- **Source data is never modified.** Files are copied into a local staging directory
+  for analysis, and the copy is deleted afterwards. If a later step needs the file
+  again, it copies it from the source again.
+- **Long-running work runs as background jobs.** Clients poll `/jobs/{id}`. Both
+  `found` and `processed` keep growing while a job runs.
+- **Indexing is restricted** to the root directories configured in `config.toml`.
+- **Only clients from the configured networks are accepted** (default `192.168.0.0/16`
+  plus loopback).
+- **Search accepts JSON only.** There is no SQL interface, and every filter maps to a
+  whitelisted column.
+
+### Stored metadata
+
+| Kind | Fields |
+|---|---|
+| All files | root, relative/absolute path, name, extension, size, unix mode, uid/gid, mtime, sha256, summary, summary status |
+| Image | format, width, height |
+| Document | type (`text`, `markdown`, `pdf`; office later), page count, extracted text |
+| Video | duration, width, height, video/audio codec, fps, container, bitrate, per-frame descriptions |
+
+## API
+
+| Endpoint | Status |
+|---|---|
+| `GET /health` | implemented |
+| `POST /index` | planned (phase 3) |
+| `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}` | planned (phase 3) |
+| `POST /search` | planned (phase 4) |
+| `POST /import_media` | planned (phase 5) |
+| `GET /health/llm` | planned (phase 5) |
+
+### `POST /index`
+
+```json
+{ "path": "/mnt/share/photos/2024", "traverse": true }
+```
+`traverse` defaults to `true`. If it is `false`, only the files directly inside `path`
+are indexed. The response is `202` with `{ "job_id": "...", "status_url": "/jobs/..." }`.
+
+### `POST /import_media`
+
+```json
+{ "kind": ["image", "video"], "path_prefix": "/mnt/share/photos", "limit": 50, "force": false }
+```
+All fields are optional. It processes items whose summary is still pending.
+For videos, one frame is sampled every `video_frame_interval_secs` (default 10 s).
+
+### `POST /search`
+
+```json
+{ "q": { "text": "person with red jacket at the beach" } }
+{ "q": { "height": "300" } }
+{ "q": { "kind": "video", "height": { "gte": 1080 }, "video_codec": "h264" }, "limit": 20, "offset": 0 }
+```
+
+### `GET /jobs/{id}`
+
+```json
+{ "id": "...", "kind": "index", "status": "running", "found": 1200, "processed": 850, "failed": 2, "skipped": 300 }
+```
+
+## Getting started
+
+See [INSTALLATION.md](INSTALLATION.md) for the system packages, SMB mounts and the
+llama.cpp setup. In short:
+
+```bash
+cp config.example.toml config.toml   # adapt roots and LLM URL
+cargo run --release
+curl http://127.0.0.1:8080/health
+```
+
+## Development
+
+Every step must pass these checks before it is committed:
+
+```bash
+cargo fmt --check
+cargo build
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+Tests generate their own fixtures, such as synthetic images and test videos. Tests
+that need `ffmpeg` or `pdftotext` skip themselves if those tools are missing.
+
+### Project layout
+
+```
+src/
+  main.rs        startup, signal handling
+  lib.rs         module wiring
+  config.rs      config.toml loading and validation
+  security.rs    IP allowlist middleware, index-root validation
+  error.rs       API error type
+  state.rs       shared application state
+  api/           HTTP handlers
+tests/           integration tests
+tasks/           phase plans and progress (start here when resuming work)
+```
+
+## Public repository hygiene
+
+This repository is public. **Never commit:**
+- `config.toml`, `.env`, or anything else with real hosts, IPs, share names or credentials
+- `data/`, staging directories, or `*.duckdb` files (they contain your file paths and content descriptions)
+- real media or documents (`.gitignore` blocks common media extensions)
+
+`config.example.toml` uses placeholders only. Check `git status` and `git diff --cached`
+before every commit.
+
+## License
+
+See [LICENSE](LICENSE).
