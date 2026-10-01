@@ -85,6 +85,12 @@ const FIELDS: &[(&str, FieldType, &str)] = &[
     ("uid", FieldType::Number, "f.uid"),
     ("gid", FieldType::Number, "f.gid"),
     ("mtime", FieldType::Time, "f.mtime"),
+    ("modified", FieldType::Time, "f.mtime"),
+    ("created", FieldType::Time, "f.created"),
+    ("language", FieldType::Exact, "d.language"),
+    ("encoding", FieldType::Exact, "d.encoding"),
+    ("compression", FieldType::Exact, "ar.compression"),
+    ("archive_format", FieldType::Exact, "ar.format"),
     ("indexed_at", FieldType::Time, "f.indexed_at"),
     ("mode", FieldType::Mode, "f.mode"),
     ("tag", FieldType::Tag, ""),
@@ -95,7 +101,8 @@ pub const SELECT_COLUMNS: &str = r#"f.id, f.root, f.rel_path, f.abs_path, f.file
     f.summary, f.summary_status, f.indexed_at,
     i.format, i.width, i.height,
     d.doc_type, d.page_count, left(d.content, 300),
-    v.duration_secs, v.width, v.height, v.video_codec, v.audio_codec, v.fps, v.container, v.bitrate"#;
+    v.duration_secs, v.width, v.height, v.video_codec, v.audio_codec, v.fps, v.container, v.bitrate,
+    f.created, d.language, d.encoding, ar.compression, ar.format"#;
 
 pub fn field_names() -> Vec<&'static str> {
     std::iter::once("text")
@@ -175,6 +182,7 @@ pub fn build(req: &SearchRequest, fts_available: bool) -> Result<BuiltQuery, Str
            LEFT JOIN images i ON i.file_id = f.id
            LEFT JOIN documents d ON d.file_id = f.id
            LEFT JOIN videos v ON v.file_id = f.id
+           LEFT JOIN archives ar ON ar.file_id = f.id
            {score_join}
            {where_sql}
            {order}

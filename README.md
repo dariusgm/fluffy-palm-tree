@@ -34,10 +34,27 @@ client ──► axum (private-network allowlist)
 
 | Kind | Fields |
 |---|---|
-| All files | root, relative/absolute path, name, extension, size, unix mode, uid/gid, mtime, sha256, summary, summary status |
+| All files | root, relative/absolute path, name, extension, MIME type, size, unix mode, uid/gid, modified (`mtime`), created (if the filesystem reports it), sha256, summary, summary status |
 | Image | format, width, height |
-| Document | type (`text`, `markdown`, `pdf`; office later), page count, extracted text |
+| Document | type (`text`, `markdown`, `code`, `pdf`; office later), language for code, encoding for text (`ascii`, `utf-8`, `utf-16le/be`, `windows-1252`), page count, extracted text |
 | Video | duration, width, height, video/audio codec, fps, container, bitrate, per-frame descriptions |
+| Archive | compression (`gzip`, `bzip2`, `xz`, `zstd`, `lz4`, `zip`, `7z`, `rar`, `none` for plain tar, ...), format (e.g. `gz`, `tar.gz`, `zip`, `7z`) |
+
+File types are detected by content (magic bytes), not by extension, so a PNG named
+`.jpg` or a JPEG without an extension is still an image:
+- **Images:** JPEG, PNG, GIF, WebP, BMP, TIFF (HEIC/RAW not yet).
+- **Videos:** anything with a video signature (MP4, MOV, MKV, WebM, AVI, OGV, ...).
+- **PDF.**
+- **Archives:** gzip, bzip2, xz, zstd, lz4, lzip, compress, zip, 7z, rar, tar. A tar
+  inside gzip is detected from the decompressed start of the file.
+- **Text documents:** every other file that reads as text (UTF-8, UTF-16 with BOM, or
+  8-bit legacy encodings). Source code, markup and config files get `doc_type: code`
+  and a `language` (from the extension, the file name such as `Dockerfile`, or a shebang
+  line).
+- Other binary formats (office files, executables, audio, databases, ...) are ignored.
+
+Only images and videos get LLM descriptions. Documents keep `summary_status: pending`
+for planned LLM document summaries. Archives get `skipped`.
 
 ## API
 
@@ -63,7 +80,8 @@ Re-indexing keeps the database at the current state of the source:
 | Situation | Result |
 |---|---|
 | Same size and modification time | skipped without reading the file |
-| Stat changed, same SHA-256 (e.g. touched) | stat columns updated; metadata and LLM results kept |
+| Same size and modification time, indexed by an older version | new stat-based metadata (e.g. `created`) filled in, counted as `updated`; LLM results kept |
+| Stat changed, same SHA-256 (e.g. touched) | stat columns updated (`updated`); metadata and LLM results kept |
 | Same path, different SHA-256 | old record and everything derived from it (metadata, frames, LLM history, tags) deleted, new record created |
 | New file with the same SHA-256 as an analysed file (copy or move) | LLM summary and frame descriptions reused, no new LLM run |
 | Record whose file no longer exists | deleted (`removed` counter), only for the indexed folder (direct children if `traverse` is `false`) and only if the walk completed without errors and was not cancelled |
@@ -120,14 +138,14 @@ so image and video analysis will fail.
 
 | Field | Match |
 |---|---|
-| `kind`, `extension`, `mime`, `root`, `doc_type`, `format`, `video_codec`, `audio_codec`, `summary_status`, `mode_str`, `sha256`, `id`, `tag` | exact, case-insensitive; a list means any of |
+| `kind`, `extension`, `mime`, `root`, `doc_type`, `language`, `encoding`, `format`, `video_codec`, `audio_codec`, `compression`, `archive_format`, `summary_status`, `mode_str`, `sha256`, `id`, `tag` | exact, case-insensitive; a list means any of |
 | `path`, `name`, `summary`, `container` | substring, case-insensitive |
 | `width`, `height` (image or video), `duration_secs`, `fps`, `size_bytes`, `page_count`, `uid`, `gid` | number or range |
-| `mtime`, `indexed_at` | `"2024-05-01"` (whole day), RFC 3339 timestamp, or range |
+| `modified` (alias `mtime`), `created`, `indexed_at` | `"2024-05-01"` (whole day), RFC 3339 timestamp, or range |
 | `mode` | octal permissions, e.g. `"644"` |
 
 - An unknown field or invalid value returns `400`. `limit` defaults to 20 (max 200).
-- Each result contains the file metadata, `score`, and an `image`/`document`/`video`
+- Each result contains the file metadata, `score`, and an `image`/`document`/`video`/`archive`
   object depending on its kind. Documents return a 300-character `snippet`. For text
   queries, videos list the `matched_frames` (timestamp and description).
 - `text_mode` is `fts`, or `substring` if the DuckDB FTS extension is unavailable.
@@ -138,13 +156,15 @@ so image and video analysis will fail.
 
 ```json
 { "id": "...", "kind": "index", "status": "running", "params": { "path": "...", "traverse": true },
-  "found": 1200, "processed": 850, "failed": 2, "skipped": 300, "removed": 4,
+  "found": 1200, "processed": 850, "failed": 2, "skipped": 300, "updated": 12, "removed": 4,
   "started_at": "...", "finished_at": null, "error": null,
   "recent_errors": [ { "path": "/mnt/share/x/broken.png", "error": "..." } ] }
 ```
 - `status` is one of `running | completed | failed | cancelled | interrupted`.
-- `skipped` counts unchanged files and files above `staging.max_file_bytes`; `removed`
-  counts records deleted because their file no longer exists.
+- `found` counts supported files. `skipped` counts unchanged files and files above
+  `staging.max_file_bytes`. `updated` counts unchanged content whose stored metadata was
+  refreshed. `removed` counts records deleted because their file no longer exists (or
+  is no longer a supported type).
 - `GET /jobs` lists the last 100 jobs. `DELETE /jobs/{id}` cancels a running job
   (`202`), or returns `409` if the job has already finished.
 
@@ -186,7 +206,7 @@ src/
   db/            DuckDB handle, migrations, models/upserts
   jobs.rs        background job registry (counters, cancel, persistence)
   staging.rs     copy-to-staging with hashing, byte budget, auto-cleanup
-  detect.rs      file kind / doc type / MIME detection
+  detect.rs      content-based type detection (magic bytes, text/encoding, code language, archives)
   extract/       metadata extractors (image header, text/pdftotext, ffprobe),
                  frame sampling (ffmpeg), image preparation for the LLM
   pipelines/     job implementations (index, import_media)
@@ -237,7 +257,7 @@ tests/           integration tests
 
 - Document summaries through the LLM (`/import_media` with `kind: ["document"]`,
   chunking long documents)
-- Office documents (docx/xlsx/pptx)
+- Office documents (docx/xlsx/pptx); archive content listings (file names inside zip/tar)
 - OCR for scanned PDFs (no text layer), e.g. render pages and send them to the vision model
 - `people_count` as a search filter, since a text query like "person" misses many images
 - Tagging API (`POST /files/{id}/tags`, `DELETE /files/{id}/tags/{tag}`); `tag` is

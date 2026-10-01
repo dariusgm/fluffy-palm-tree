@@ -96,7 +96,7 @@ pub fn write_png(path: &Path, w: u32, h: u32) {
         std::fs::create_dir_all(p).unwrap();
     }
     image::RgbImage::from_pixel(w, h, image::Rgb([200, 30, 30]))
-        .save(path)
+        .save_with_format(path, image::ImageFormat::Png)
         .unwrap();
 }
 

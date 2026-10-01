@@ -56,6 +56,8 @@ pub struct JobView {
     pub skipped: u64,
     /// Records deleted because their files no longer exist at the source.
     pub removed: u64,
+    /// Unchanged content whose stored metadata was refreshed (LLM results kept).
+    pub updated: u64,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub error: Option<String>,
@@ -80,6 +82,7 @@ pub struct Job {
     failed: AtomicU64,
     skipped: AtomicU64,
     removed: AtomicU64,
+    updated: AtomicU64,
     cancel: CancellationToken,
     inner: Mutex<JobInner>,
 }
@@ -99,6 +102,9 @@ impl Job {
     }
     pub fn add_removed(&self, n: u64) {
         self.removed.fetch_add(n, Ordering::Relaxed);
+    }
+    pub fn inc_updated(&self) {
+        self.updated.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Counts a failed item and keeps the most recent errors for the status endpoint.
@@ -141,6 +147,7 @@ impl Job {
             failed: self.failed.load(Ordering::Relaxed),
             skipped: self.skipped.load(Ordering::Relaxed),
             removed: self.removed.load(Ordering::Relaxed),
+            updated: self.updated.load(Ordering::Relaxed),
             started_at: self.started_at,
             finished_at: inner.finished_at,
             error: inner.error.clone(),
@@ -192,6 +199,7 @@ impl JobRegistry {
             failed: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
             removed: AtomicU64::new(0),
+            updated: AtomicU64::new(0),
             cancel: CancellationToken::new(),
             inner: Mutex::new(JobInner {
                 status: JobStatus::Running,
@@ -251,7 +259,7 @@ impl JobRegistry {
             .call(move |c| {
                 c.execute(
                     r#"UPDATE jobs SET status = ?, found = ?, processed = ?, failed = ?, skipped = ?,
-                              removed = ?, finished_at = ?, error = ?, recent_errors = ?
+                              removed = ?, updated = ?, finished_at = ?, error = ?, recent_errors = ?
                        WHERE id = ?"#,
                     params![
                         v.status,
@@ -260,6 +268,7 @@ impl JobRegistry {
                         v.failed as i64,
                         v.skipped as i64,
                         v.removed as i64,
+                        v.updated as i64,
                         v.finished_at,
                         v.error,
                         serde_json::to_string(&v.recent_errors)?,
@@ -336,7 +345,7 @@ impl JobRegistry {
 
 const SELECT_JOB: &str = r#"SELECT id, kind, CAST(params AS VARCHAR), status, found, processed,
     failed, skipped, started_at, finished_at, error, CAST(recent_errors AS VARCHAR),
-    coalesce(removed, 0) FROM jobs"#;
+    coalesce(removed, 0), coalesce(updated, 0) FROM jobs"#;
 
 fn job_from_row(r: &Row<'_>) -> duckdb::Result<JobView> {
     let params: Option<String> = r.get(2)?;
@@ -353,6 +362,7 @@ fn job_from_row(r: &Row<'_>) -> duckdb::Result<JobView> {
         failed: r.get::<_, i64>(6)? as u64,
         skipped: r.get::<_, i64>(7)? as u64,
         removed: r.get::<_, i64>(12)? as u64,
+        updated: r.get::<_, i64>(13)? as u64,
         started_at: r.get(8)?,
         finished_at: r.get(9)?,
         error: r.get(10)?,

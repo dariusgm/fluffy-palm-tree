@@ -36,7 +36,10 @@ pub struct SearchHit {
     pub mode_str: String,
     pub uid: Option<i64>,
     pub gid: Option<i64>,
+    /// Last modification time.
     pub mtime: Option<DateTime<Utc>>,
+    /// Creation (birth) time, if the filesystem reports it.
+    pub created: Option<DateTime<Utc>>,
     pub sha256: Option<String>,
     pub summary: String,
     pub summary_status: String,
@@ -48,6 +51,8 @@ pub struct SearchHit {
     pub document: Option<DocumentHit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video: Option<VideoHit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive: Option<ArchiveHit>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub matched_frames: Vec<FrameHit>,
 }
@@ -64,6 +69,14 @@ pub struct DocumentHit {
     pub doc_type: String,
     pub page_count: Option<i64>,
     pub snippet: Option<String>,
+    pub language: Option<String>,
+    pub encoding: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ArchiveHit {
+    pub compression: String,
+    pub format: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -185,6 +198,14 @@ fn hit_from_row(r: &Row<'_>) -> duckdb::Result<(SearchHit, u64)> {
             doc_type,
             page_count: r.get(22)?,
             snippet: r.get(23)?,
+            language: r.get(33)?,
+            encoding: r.get(34)?,
+        })
+    });
+    let archive = (kind == "archive").then(|| -> duckdb::Result<ArchiveHit> {
+        Ok(ArchiveHit {
+            compression: r.get(35)?,
+            format: r.get(36)?,
         })
     });
     let video = (kind == "video").then(|| -> duckdb::Result<VideoHit> {
@@ -217,13 +238,15 @@ fn hit_from_row(r: &Row<'_>) -> duckdb::Result<(SearchHit, u64)> {
         summary: r.get(15)?,
         summary_status: r.get(16)?,
         indexed_at: r.get(17)?,
-        score: r.get(32)?,
+        created: r.get(32)?,
+        archive: archive.transpose()?,
+        score: r.get(37)?,
         image: image.transpose()?,
         document: document.transpose()?,
         video: video.transpose()?,
         matched_frames: Vec::new(),
         kind,
     };
-    let total: i64 = r.get(33)?;
+    let total: i64 = r.get(38)?;
     Ok((hit, total as u64))
 }

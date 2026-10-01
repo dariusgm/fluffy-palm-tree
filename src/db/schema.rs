@@ -96,6 +96,18 @@ ALTER TABLE analyses ADD COLUMN ts_secs DOUBLE;
     r#"
 ALTER TABLE jobs ADD COLUMN removed BIGINT DEFAULT 0;
 "#,
+    r#"
+ALTER TABLE files ADD COLUMN created TIMESTAMP;
+ALTER TABLE files ADD COLUMN meta_version INTEGER DEFAULT 1;
+ALTER TABLE documents ADD COLUMN language TEXT;
+ALTER TABLE documents ADD COLUMN encoding TEXT;
+ALTER TABLE jobs ADD COLUMN updated BIGINT DEFAULT 0;
+CREATE TABLE archives (
+    file_id     TEXT PRIMARY KEY,
+    compression TEXT NOT NULL,
+    format      TEXT NOT NULL
+);
+"#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {

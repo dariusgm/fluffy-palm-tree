@@ -11,6 +11,7 @@ pub enum FileKind {
     Image,
     Document,
     Video,
+    Archive,
 }
 
 impl FileKind {
@@ -19,6 +20,7 @@ impl FileKind {
             FileKind::Image => "image",
             FileKind::Document => "document",
             FileKind::Video => "video",
+            FileKind::Archive => "archive",
         }
     }
 }
@@ -36,6 +38,7 @@ impl FromStr for FileKind {
             "image" => Ok(Self::Image),
             "document" => Ok(Self::Document),
             "video" => Ok(Self::Video),
+            "archive" => Ok(Self::Archive),
             other => Err(format!("unknown kind {other:?}")),
         }
     }
@@ -47,6 +50,8 @@ pub enum DocType {
     Text,
     Markdown,
     Pdf,
+    /// Source code, markup and config files (language in `DocumentMeta::language`).
+    Code,
 }
 
 impl DocType {
@@ -55,6 +60,7 @@ impl DocType {
             DocType::Text => "text",
             DocType::Markdown => "markdown",
             DocType::Pdf => "pdf",
+            DocType::Code => "code",
         }
     }
 }
@@ -96,8 +102,23 @@ pub struct FileRecord {
     pub uid: u32,
     pub gid: u32,
     pub mtime: Option<DateTime<Utc>>,
+    /// Birth time, if the filesystem reports it (not on every mount, e.g. not GVFS).
+    pub created: Option<DateTime<Utc>>,
     pub sha256: Option<String>,
 }
+
+/// Stat-derived fields that can be refreshed without reading the file.
+#[derive(Debug, Clone)]
+pub struct StatFields {
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub created: Option<DateTime<Utc>>,
+}
+
+/// Bump when new per-file metadata is extracted, so re-indexing fills it in for
+/// files that are otherwise unchanged (without touching their LLM results).
+pub const META_VERSION: i32 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ImageMeta {
@@ -111,6 +132,17 @@ pub struct DocumentMeta {
     pub doc_type: DocType,
     pub page_count: Option<u32>,
     pub content: Option<String>,
+    pub language: Option<String>,
+    /// Character encoding of text documents: ascii, utf-8, utf-16le/be, windows-1252.
+    pub encoding: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveMeta {
+    /// gzip, bzip2, xz, zstd, lz4, lzip, compress, zip, 7z, rar or none (plain tar).
+    pub compression: String,
+    /// e.g. gz, tar.gz, zip, 7z, tar.
+    pub format: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -130,6 +162,7 @@ pub enum Details {
     Image(ImageMeta),
     Document(DocumentMeta),
     Video(VideoMeta),
+    Archive(ArchiveMeta),
     /// Base record only (e.g. file too large or extraction failed).
     None,
 }
@@ -141,6 +174,7 @@ pub struct StoredStat {
     pub size_bytes: u64,
     pub mtime: Option<DateTime<Utc>>,
     pub sha256: Option<String>,
+    pub meta_version: i32,
 }
 
 /// Tables holding rows that belong to a file. All of them are cleared when the file's
@@ -149,6 +183,7 @@ const FILE_CHILD_TABLES: &[&str] = &[
     "images",
     "documents",
     "videos",
+    "archives",
     "video_frames",
     "analyses",
     "tags",
@@ -173,7 +208,7 @@ pub fn find_stat(
 ) -> anyhow::Result<Option<StoredStat>> {
     let row = conn
         .query_row(
-            "SELECT id, size_bytes, mtime, sha256 FROM files WHERE root = ? AND rel_path = ?",
+            "SELECT id, size_bytes, mtime, sha256, meta_version FROM files WHERE root = ? AND rel_path = ?",
             params![root, rel_path],
             |r| {
                 Ok(StoredStat {
@@ -181,6 +216,7 @@ pub fn find_stat(
                     size_bytes: r.get::<_, i64>(1)? as u64,
                     mtime: r.get(2)?,
                     sha256: r.get(3)?,
+                    meta_version: r.get::<_, Option<i32>>(4)?.unwrap_or(1),
                 })
             },
         )
@@ -207,7 +243,7 @@ pub fn delete_file(conn: &mut Connection, id: &str) -> anyhow::Result<()> {
 pub fn touch_unchanged(conn: &Connection, id: &str, rec: &FileRecord) -> anyhow::Result<()> {
     conn.execute(
         r#"UPDATE files SET size_bytes = ?, mode = ?, mode_str = ?, uid = ?, gid = ?,
-                  mtime = ?, sha256 = ?, indexed_at = ?
+                  mtime = ?, created = ?, sha256 = ?, meta_version = ?, indexed_at = ?
            WHERE id = ?"#,
         params![
             rec.size_bytes as i64,
@@ -216,7 +252,30 @@ pub fn touch_unchanged(conn: &Connection, id: &str, rec: &FileRecord) -> anyhow:
             rec.uid,
             rec.gid,
             rec.mtime,
+            rec.created,
             rec.sha256,
+            META_VERSION,
+            Utc::now(),
+            id
+        ],
+    )?;
+    Ok(())
+}
+
+/// Unchanged file indexed by an older version: fill in the stat-based metadata added
+/// since (e.g. `created`) without reading the file and without touching other data.
+pub fn refresh_stat(conn: &Connection, id: &str, stat: &StatFields) -> anyhow::Result<()> {
+    conn.execute(
+        r#"UPDATE files SET mode = ?, mode_str = ?, uid = ?, gid = ?, created = ?,
+                  meta_version = ?, indexed_at = ?
+           WHERE id = ?"#,
+        params![
+            stat.mode,
+            mode_string(stat.mode),
+            stat.uid,
+            stat.gid,
+            stat.created,
+            META_VERSION,
             Utc::now(),
             id
         ],
@@ -305,9 +364,9 @@ pub fn save_indexed(
     let id = uuid::Uuid::new_v4().to_string();
     tx.execute(
         r#"INSERT INTO files (id, root, rel_path, abs_path, file_name, extension, kind, mime,
-                              size_bytes, mode, mode_str, uid, gid, mtime, sha256,
-                              summary, summary_status, indexed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)"#,
+                              size_bytes, mode, mode_str, uid, gid, mtime, created, sha256,
+                              summary, summary_status, meta_version, indexed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)"#,
         params![
             id,
             rec.root,
@@ -323,8 +382,10 @@ pub fn save_indexed(
             rec.uid,
             rec.gid,
             rec.mtime,
+            rec.created,
             rec.sha256,
             status.as_str(),
+            META_VERSION,
             Utc::now(),
         ],
     )?;
@@ -338,8 +399,16 @@ pub fn save_indexed(
         }
         Details::Document(m) => {
             tx.execute(
-                "INSERT INTO documents (file_id, doc_type, page_count, content) VALUES (?, ?, ?, ?)",
-                params![id, m.doc_type.as_str(), m.page_count, m.content],
+                "INSERT INTO documents (file_id, doc_type, page_count, content, language, encoding)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    m.doc_type.as_str(),
+                    m.page_count,
+                    m.content,
+                    m.language,
+                    m.encoding
+                ],
             )?;
         }
         Details::Video(m) => {
@@ -358,6 +427,12 @@ pub fn save_indexed(
                     m.container,
                     m.bitrate.map(|b| b as i64),
                 ],
+            )?;
+        }
+        Details::Archive(m) => {
+            tx.execute(
+                "INSERT INTO archives (file_id, compression, format) VALUES (?, ?, ?)",
+                params![id, m.compression, m.format],
             )?;
         }
         Details::None => {}
@@ -385,6 +460,7 @@ mod tests {
             uid: 1000,
             gid: 1000,
             mtime: Some(DateTime::from_timestamp_micros(1_700_000_000_123_456).unwrap()),
+            created: None,
             sha256: None,
         }
     }

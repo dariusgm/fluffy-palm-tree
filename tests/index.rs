@@ -10,7 +10,8 @@ fn populate(env: &TestEnv) {
     write_png(&env.root.join(".hidden/c.png"), 8, 8);
     std::fs::write(env.root.join("notes.txt"), "the quick brown fox").unwrap();
     std::fs::write(env.root.join("readme.md"), "# Title\nmarkdown body").unwrap();
-    std::fs::write(env.root.join("ignored.xyz"), "nope").unwrap();
+    // Binary without a known signature: not supported.
+    std::fs::write(env.root.join("ignored.xyz"), b"\x00\x01\x02binary").unwrap();
 }
 
 async fn index(env: &TestEnv, body: serde_json::Value) -> serde_json::Value {
@@ -101,7 +102,8 @@ async fn rejects_paths_outside_roots() {
 #[tokio::test]
 async fn failed_files_are_reported() {
     let env = TestEnv::new();
-    std::fs::write(env.root.join("broken.png"), "not an image").unwrap();
+    // PNG signature but truncated: detected as image, extraction fails.
+    std::fs::write(env.root.join("broken.png"), b"\x89PNG\r\n\x1a\nnot really").unwrap();
     let job = index(&env, json!({ "path": env.root })).await;
     assert_eq!(job["failed"], 1, "{job}");
     assert!(
@@ -197,7 +199,7 @@ async fn touched_file_keeps_record_and_llm_results() {
     set_mtime(&file, 1_600_000_000);
     let job = index(&env, json!({ "path": env.root })).await;
     assert_eq!(
-        (job["processed"].as_u64(), job["skipped"].as_u64()),
+        (job["processed"].as_u64(), job["updated"].as_u64()),
         (Some(0), Some(1)),
         "{job}"
     );

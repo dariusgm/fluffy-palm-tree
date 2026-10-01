@@ -10,7 +10,9 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinSet;
 use walkdir::WalkDir;
 
-use crate::db::models::{self, Details, FileKind, FileRecord, SummaryStatus};
+use crate::db::models::{
+    self, Details, FileKind, FileRecord, META_VERSION, StatFields, SummaryStatus,
+};
 use crate::detect::{self, Detected};
 use crate::extract;
 use crate::jobs::Job;
@@ -32,12 +34,18 @@ fn default_traverse() -> bool {
 enum Outcome {
     Indexed,
     Unchanged,
+    /// Same content, stored metadata refreshed (LLM results kept).
+    Updated,
     TooLarge,
+    /// Not a supported file type; `removed` if an existing record had to be dropped.
+    Unsupported {
+        removed: bool,
+    },
 }
 
-/// Result of walking the tree: relative paths of all supported files, and whether the
-/// walk saw everything (no read errors, not cancelled). Only a complete walk may be used
-/// to delete records of files that disappeared.
+/// Result of walking the tree: relative paths of all regular files, and whether the walk
+/// saw everything (no read errors, not cancelled). Only a complete walk may be used to
+/// delete records of files that disappeared.
 struct WalkResult {
     seen: HashSet<String>,
     complete: bool,
@@ -68,9 +76,19 @@ pub async fn run(
                 }
                 let next = rx.lock().await.recv().await;
                 let Some(path) = next else { break };
-                match process_file(&state, &target, &path).await {
+                let outcome = process_file(&state, &target, &path).await;
+                if !matches!(outcome, Ok(Outcome::Unsupported { .. })) {
+                    job.inc_found();
+                }
+                match outcome {
                     Ok(Outcome::Indexed) => job.inc_processed(),
+                    Ok(Outcome::Updated) => job.inc_updated(),
                     Ok(Outcome::Unchanged | Outcome::TooLarge) => job.inc_skipped(),
+                    Ok(Outcome::Unsupported { removed }) => {
+                        if removed {
+                            job.add_removed(1);
+                        }
+                    }
                     Err(e) => job.record_failure(path.display().to_string(), &e),
                 }
             }
@@ -102,7 +120,8 @@ pub async fn run(
     Ok(())
 }
 
-/// Walks the tree without following symlinks and skips hidden entries.
+/// Walks the tree without following symlinks and skips hidden entries. Every regular
+/// file is passed on; the workers decide by content whether it is supported.
 fn walk(target: &ResolvedPath, traverse: bool, job: &Job, tx: mpsc::Sender<PathBuf>) -> WalkResult {
     let mut result = WalkResult {
         seen: HashSet::new(),
@@ -132,7 +151,7 @@ fn walk(target: &ResolvedPath, traverse: bool, job: &Job, tx: mpsc::Sender<PathB
                 continue;
             }
         };
-        if !entry.file_type().is_file() || detect::detect(entry.path()).is_none() {
+        if !entry.file_type().is_file() {
             continue;
         }
         if let Some(rel) = target
@@ -141,7 +160,6 @@ fn walk(target: &ResolvedPath, traverse: bool, job: &Job, tx: mpsc::Sender<PathB
         {
             result.seen.insert(rel);
         }
-        job.inc_found();
         if tx.blocking_send(entry.into_path()).is_err() {
             result.complete = false;
             break;
@@ -156,7 +174,6 @@ async fn process_file(
     path: &Path,
 ) -> anyhow::Result<Outcome> {
     let cfg = &state.config.staging;
-    let detected = detect::detect(path).context("unsupported file type")?;
     let meta = tokio::fs::symlink_metadata(path).await?;
     let abs_path = path
         .to_str()
@@ -168,6 +185,12 @@ async fn process_file(
         .context("path outside of root")?;
     let mtime = file_mtime(&meta);
     let size = meta.len();
+    let stat = StatFields {
+        mode: meta.mode() & 0o7777,
+        uid: meta.uid(),
+        gid: meta.gid(),
+        created: meta.created().ok().and_then(to_micros),
+    };
 
     let (root, rel) = (target.root_name.clone(), rel_path.clone());
     let existing = state
@@ -176,12 +199,42 @@ async fn process_file(
         .await?;
     // Fast path: same size and mtime means unchanged, without reading the file
     // (re-reading a large share on every run would be far too slow over SMB).
-    if existing
+    if let Some(old) = existing
         .as_ref()
-        .is_some_and(|s| s.size_bytes == size && s.mtime == mtime)
+        .filter(|s| s.size_bytes == size && s.mtime == mtime)
     {
-        return Ok(Outcome::Unchanged);
+        if old.meta_version >= META_VERSION {
+            return Ok(Outcome::Unchanged);
+        }
+        let (id, stat) = (old.id.clone(), stat);
+        state
+            .db
+            .call(move |c| models::refresh_stat(c, &id, &stat))
+            .await?;
+        return Ok(Outcome::Updated);
     }
+
+    let detected = {
+        let p = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            detect::read_header(&p).map(|h| detect::classify(&p, &h))
+        })
+        .await??
+    };
+    let Some(detected) = detected else {
+        // Unsupported now; drop a stale record if the content type changed.
+        let removed = match existing {
+            Some(old) => {
+                state
+                    .db
+                    .call(move |c| models::delete_file(c, &old.id))
+                    .await?;
+                true
+            }
+            None => false,
+        };
+        return Ok(Outcome::Unsupported { removed });
+    };
 
     let mut rec = FileRecord {
         root: target.root_name.clone(),
@@ -193,12 +246,13 @@ async fn process_file(
         extension: detect::extension(path),
         abs_path,
         kind: detected.kind,
-        mime: None,
+        mime: Some(detected.mime.clone()),
         size_bytes: size,
-        mode: meta.mode() & 0o7777,
-        uid: meta.uid(),
-        gid: meta.gid(),
+        mode: stat.mode,
+        uid: stat.uid,
+        gid: stat.gid,
         mtime,
+        created: stat.created,
         sha256: None,
     };
 
@@ -222,7 +276,7 @@ async fn process_file(
                 .db
                 .call(move |c| models::touch_unchanged(c, &old.id, &rec))
                 .await?;
-            return Ok(Outcome::Unchanged);
+            return Ok(Outcome::Updated);
         }
         // New content: drop the old record now, so a failed extraction leaves no stale data.
         state
@@ -232,12 +286,14 @@ async fn process_file(
     }
 
     let work_path = staged.as_ref().map_or(path, |s| s.path()).to_path_buf();
-    rec.mime = {
-        let p = work_path.clone();
-        tokio::task::spawn_blocking(move || detect::sniff_mime(&p, detected)).await?
+    let details = extract_details(&work_path, &detected).await?;
+    let status = match detected.kind {
+        // Documents stay pending for the planned LLM document summaries.
+        FileKind::Image | FileKind::Video | FileKind::Document => SummaryStatus::Pending,
+        // No LLM step planned for archives.
+        FileKind::Archive => SummaryStatus::Skipped,
     };
-    let details = extract_details(&work_path, detected, rec.mime.clone()).await?;
-    let id = save(state, rec, details, SummaryStatus::Pending).await?;
+    let id = save(state, rec, details, status).await?;
     let reused = state
         .db
         .call(move |c| models::reuse_analysis(c, &id, &sha))
@@ -248,24 +304,28 @@ async fn process_file(
     Ok(Outcome::Indexed)
 }
 
-async fn extract_details(
-    path: &Path,
-    detected: Detected,
-    mime: Option<String>,
-) -> anyhow::Result<Details> {
+async fn extract_details(path: &Path, detected: &Detected) -> anyhow::Result<Details> {
     Ok(match detected.kind {
         FileKind::Image => {
-            let p = path.to_path_buf();
+            let (p, mime) = (path.to_path_buf(), detected.mime.clone());
             let meta =
-                tokio::task::spawn_blocking(move || extract::image::extract(&p, mime.as_deref()))
+                tokio::task::spawn_blocking(move || extract::image::extract(&p, Some(&mime)))
                     .await??;
             Details::Image(meta)
         }
         FileKind::Document => {
             let doc_type = detected.doc_type.context("document without doc type")?;
-            Details::Document(extract::document::extract(path, doc_type).await?)
+            Details::Document(
+                extract::document::extract(path, doc_type, detected.language.clone()).await?,
+            )
         }
         FileKind::Video => Details::Video(extract::video::extract(path).await?),
+        FileKind::Archive => Details::Archive(
+            detected
+                .archive
+                .clone()
+                .context("archive without details")?,
+        ),
     })
 }
 
@@ -288,4 +348,9 @@ fn file_mtime(meta: &std::fs::Metadata) -> Option<DateTime<Utc>> {
         .checked_mul(1_000_000)?
         .checked_add(meta.mtime_nsec() / 1_000)?;
     DateTime::from_timestamp_micros(micros)
+}
+
+fn to_micros(t: std::time::SystemTime) -> Option<DateTime<Utc>> {
+    let micros = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_micros();
+    DateTime::from_timestamp_micros(i64::try_from(micros).ok()?)
 }

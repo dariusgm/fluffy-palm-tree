@@ -38,10 +38,11 @@ impl ImportRequest {
         } else {
             self.kind.clone()
         };
-        if kinds.contains(&FileKind::Document) {
-            return Err(
-                "document summaries are not supported yet; use kind image and/or video".into(),
-            );
+        if kinds
+            .iter()
+            .any(|k| matches!(k, FileKind::Document | FileKind::Archive))
+        {
+            return Err("only image and video are supported; use kind image and/or video".into());
         }
         Ok(CandidateFilter {
             kinds,
@@ -137,7 +138,9 @@ async fn analyze(state: &AppState, job: &Job, item: &MediaCandidate) -> anyhow::
     match item.kind {
         FileKind::Image => describe_image(state, &item.id, staged.path(), None).await,
         FileKind::Video => analyze_video(state, job, item, staged).await,
-        FileKind::Document => bail!("documents are not supported by import_media yet"),
+        FileKind::Document | FileKind::Archive => {
+            bail!("only images and videos are supported by import_media")
+        }
     }
 }
 
