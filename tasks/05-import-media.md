@@ -73,3 +73,7 @@ All fields are optional. Default: all images and videos with `summary_status = '
 - The video test is skipped without `ffmpeg`, so the ffmpeg frame extraction
   (`src/extract/frames.rs`) has **not been run yet**. After `sudo apt install ffmpeg`,
   run `cargo test` before the live LLM test.
+- Updated in phase 6: frame sampling uses the `select` filter instead of `fps=1/N`
+  (`fps` dropped the last sample near the end of the video). Prompts are now `img-v2` /
+  `video-merge-v2`, `max_tokens` is 1536, and truncated answers are flagged in
+  `analyses.error` with a salvaged summary.

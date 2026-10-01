@@ -90,7 +90,8 @@ async fn imports_image_description_and_makes_it_searchable() {
         "SELECT model, prompt_version, CAST(prompt_tokens AS VARCHAR), error FROM analyses",
     )
     .await;
-    assert_eq!(rows, vec![vec!["test-model", "img-v1", "812", ""]]);
+    let version = media_search::llm::prompts::IMAGE_PROMPT_VERSION;
+    assert_eq!(rows, vec![vec!["test-model", version, "812", ""]]);
 
     // Nothing pending anymore: a second run finds nothing.
     let job = run_job(&env, "/import_media", json!({})).await;
@@ -243,12 +244,12 @@ async fn imports_video_frames_when_ffmpeg_installed() {
         .mount(&server)
         .await;
     let env = env_with_llm(&server).await;
-    assert!(write_video(&env.root.join("clip.mp4"), 25));
+    assert!(write_video(&env.root.join("clip.mp4"), 22));
     run_job(&env, "/index", json!({ "path": env.root })).await;
     let job = run_job(&env, "/import_media", json!({ "kind": ["video"] })).await;
     assert_eq!(job["processed"], 1, "{job}");
 
-    // 25 s at one frame per 10 s → frames at 0, 10, 20
+    // 22 s at one frame per 10 s → 0, 10, 20 (fps=1/10 used to drop the frame near the end)
     let frames = query(
         &env,
         "SELECT CAST(ts_secs AS VARCHAR) FROM video_frames ORDER BY ts_secs",

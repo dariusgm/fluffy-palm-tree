@@ -24,8 +24,12 @@ pub async fn sample(
     max_frames: u32,
     max_edge: u32,
 ) -> anyhow::Result<Vec<(f64, PathBuf)>> {
+    // `select` keeps the first frame and then the first frame at least `interval` seconds
+    // after the previous pick. Unlike `fps=1/N` it does not drop a sample that falls within
+    // N/2 seconds of the end of the video.
     let filter = format!(
-        "fps=1/{interval:.3},scale='if(gt(iw,ih),min({max_edge},iw),-2)':'if(gt(iw,ih),-2,min({max_edge},ih))'"
+        "select='isnan(prev_selected_t)+gte(t-prev_selected_t,{interval:.3})',\
+         scale='if(gt(iw,ih),min({max_edge},iw),-2)':'if(gt(iw,ih),-2,min({max_edge},ih))'"
     );
     let pattern = out_dir.join("f_%05d.jpg");
     let frames = max_frames.to_string();
@@ -40,6 +44,8 @@ pub async fn sample(
             video.as_os_str(),
             "-vf".as_ref(),
             filter.as_ref(),
+            "-fps_mode".as_ref(),
+            "vfr".as_ref(),
             "-frames:v".as_ref(),
             frames.as_ref(),
             "-q:v".as_ref(),

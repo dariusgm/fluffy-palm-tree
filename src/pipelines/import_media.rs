@@ -14,7 +14,7 @@ use crate::llm::{Part, prompts};
 use crate::security::resolve_in_roots;
 use crate::state::AppState;
 
-const MAX_TOKENS: u32 = 1024;
+const MAX_TOKENS: u32 = 1536;
 /// Per-frame text passed to the merge prompt, to keep long videos within the context size.
 const MERGE_FRAME_CHARS: usize = 600;
 
@@ -248,7 +248,12 @@ async fn call_llm(
                 .as_ref()
                 .map(prompts::searchable_text)
                 .filter(|t| !t.is_empty())
+                .or_else(|| prompts::salvage_summary(&c.text))
                 .unwrap_or_else(|| c.text.clone());
+            if c.truncated {
+                // Still usable (salvaged summary), but flagged for quality statistics.
+                rec.error = Some(format!("output truncated at max_tokens={MAX_TOKENS}"));
+            }
             rec.raw_response = Some(c.text);
             rec.parsed = parsed;
             rec.latency_ms = Some(c.latency_ms);

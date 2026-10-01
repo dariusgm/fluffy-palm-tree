@@ -27,6 +27,8 @@ pub struct Completion {
     pub prompt_tokens: Option<i64>,
     pub completion_tokens: Option<i64>,
     pub latency_ms: i64,
+    /// True if generation stopped at `max_tokens` (`finish_reason == "length"`).
+    pub truncated: bool,
 }
 
 impl LlmClient {
@@ -137,6 +139,7 @@ impl LlmClient {
             prompt_tokens: v["usage"]["prompt_tokens"].as_i64(),
             completion_tokens: v["usage"]["completion_tokens"].as_i64(),
             latency_ms,
+            truncated: v["choices"][0]["finish_reason"] == "length",
         })
     }
 }
