@@ -59,6 +59,9 @@ marked `skipped`.
 
 ## API
 
+The full reference with request fields, response examples and error codes is in
+[API.md](API.md); this section summarises the behaviour of each endpoint.
+
 | Endpoint | Status |
 |---|---|
 | `GET /health` | implemented |
