@@ -68,6 +68,8 @@ const FIELDS: &[(&str, FieldType, &str)] = &[
     ("mode_str", FieldType::Exact, "f.mode_str"),
     ("summary_status", FieldType::Exact, "f.summary_status"),
     ("ocr_status", FieldType::Exact, "f.ocr_status"),
+    ("summary_model", FieldType::Exact, "f.summary_model"),
+    ("ocr_model", FieldType::Exact, "f.ocr_model"),
     ("sha256", FieldType::Exact, "f.sha256"),
     ("doc_type", FieldType::Exact, "d.doc_type"),
     ("format", FieldType::Exact, "i.format"),
@@ -104,7 +106,8 @@ pub const SELECT_COLUMNS: &str = r#"f.id, f.root, f.rel_path, f.abs_path, f.file
     d.doc_type, d.page_count, left(d.content, 300),
     v.duration_secs, v.width, v.height, v.video_codec, v.audio_codec, v.fps, v.container, v.bitrate,
     f.created, d.language, d.encoding, ar.compression, ar.format, f.ocr_status,
-    (SELECT left(string_agg(o.text, chr(10) ORDER BY o.page), 1000) FROM ocr o WHERE o.file_id = f.id)"#;
+    (SELECT left(string_agg(o.text, chr(10) ORDER BY o.page), 1000) FROM ocr o WHERE o.file_id = f.id),
+    f.summary_model, f.ocr_model"#;
 
 pub fn field_names() -> Vec<&'static str> {
     std::iter::once("text")

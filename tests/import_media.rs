@@ -88,6 +88,7 @@ async fn imports_image_description_and_makes_it_searchable() {
         .await;
     assert_eq!(r["results"][0]["name"], "square.png", "{r}");
     assert_eq!(r["results"][0]["summary_status"], "done");
+    assert_eq!(r["results"][0]["summary_model"], "test-model");
     let summary = r["results"][0]["summary"].as_str().unwrap();
     assert!(summary.starts_with("A red square"), "{summary}");
     assert!(summary.contains("Tags: red, minimal."), "{summary}");
@@ -359,4 +360,14 @@ async fn similar_images_reuse_the_description_of_an_analysed_one() {
     assert_eq!(rows[1][0], "b_smaller_copy.png");
     assert_eq!(rows[1][1..], ["done", "true", "a.png"]);
     assert_eq!(rows[2], vec!["c_different.png", "done", "", ""]);
+    let models = query(
+        &env,
+        "SELECT DISTINCT summary_model FROM files WHERE summary_status = 'done'",
+    )
+    .await;
+    assert_eq!(
+        models,
+        vec![vec!["test-model"]],
+        "reused files keep the donor's model"
+    );
 }

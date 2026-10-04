@@ -146,6 +146,11 @@ async fn already_described_image_only_gets_ocr() {
     );
     assert_eq!(hit["summary_status"], "done");
     assert_eq!(hit["ocr_text"], "EXIT");
+    assert!(
+        hit["summary_model"].is_null(),
+        "the description was not redone"
+    );
+    assert_eq!(hit["ocr_model"], "your-model-name");
 }
 
 #[tokio::test]

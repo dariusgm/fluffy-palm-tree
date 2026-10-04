@@ -141,7 +141,7 @@ ignored); results are ordered by relevance. All other keys filter on metadata:
 
 | Field | Match |
 |---|---|
-| `kind`, `extension`, `mime`, `root`, `doc_type`, `language`, `encoding`, `format`, `video_codec`, `audio_codec`, `compression`, `archive_format`, `summary_status`, `ocr_status`, `mode_str`, `sha256`, `id`, `tag` | exact, case-insensitive; a list means any of |
+| `kind`, `extension`, `mime`, `root`, `doc_type`, `language`, `encoding`, `format`, `video_codec`, `audio_codec`, `compression`, `archive_format`, `summary_status`, `ocr_status`, `summary_model`, `ocr_model`, `mode_str`, `sha256`, `id`, `tag` | exact, case-insensitive; a list means any of |
 | `path`, `name`, `summary`, `container` | substring, case-insensitive |
 | `width`, `height` (image or video), `duration_secs`, `fps`, `size_bytes`, `page_count`, `uid`, `gid` | number or range |
 | `modified` (alias `mtime`), `created`, `indexed_at` | `"2024-05-01"` (whole day), RFC 3339 timestamp, or range |
@@ -179,7 +179,9 @@ Response `200`:
       "sha256": "d6e296012ddef0fbc541a1def14ef1d93325f57c5cf7a41ddbf759eb4d538c3d",
       "summary": "A person in a red jacket stands on a beach ... Tags: beach, red jacket.",
       "summary_status": "done",
+      "summary_model": "unsloth/Qwen3.8-Flash-Next-GGUF:UD-IQ4_XS",
       "ocr_status": "none",
+      "ocr_model": "unsloth/Qwen3.8-Flash-Next-GGUF:UD-IQ4_XS",
       "indexed_at": "2026-10-01T22:40:03Z",
       "score": 7.31,
       "image": { "format": "jpeg", "width": 4032, "height": 3024 }
@@ -197,6 +199,8 @@ Response `200`:
   `container`, `bitrate`) or `archive` (`compression`, `format`).
 - `summary_status` is `pending`, `running`, `done`, `failed` or `skipped`. `ocr_status`
   is `done`, `none` (no text found), `failed`, `skipped`, or null (not run).
+  `summary_model` and `ocr_model` name the LLM (`llm.model`) that produced them; null if
+  the step has not run.
 - Files with recognised text have `ocr_text` (first 1000 characters). For text queries,
   videos list `matched_frames` (`ts_secs`, `description`).
 - The full-text index is rebuilt when an index or import job finishes. Files added by a

@@ -122,9 +122,16 @@ pub fn reuse_by_phash(
     max_distance: u32,
 ) -> anyhow::Result<Option<String>> {
     // An all-zero hash is a flat or featureless picture and matches too much.
-    let donor: Option<(String, String, Option<String>)> = conn
+    type Donor = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let donor: Option<Donor> = conn
         .query_row(
-            r#"SELECT f.id, f.summary, f.ocr_status
+            r#"SELECT f.id, f.summary, f.ocr_status, f.summary_model, f.ocr_model
                FROM images me, images i JOIN files f ON f.id = i.file_id
                WHERE me.file_id = ? AND me.phash IS NOT NULL AND me.phash <> 0
                  AND i.phash IS NOT NULL AND f.id <> me.file_id
@@ -133,16 +140,17 @@ pub fn reuse_by_phash(
                  AND bit_count(xor(i.phash, me.phash)) <= ?
                ORDER BY bit_count(xor(i.phash, me.phash)), f.indexed_at DESC LIMIT 1"#,
             params![id, max_distance],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    let Some((donor_id, summary, ocr_status)) = donor else {
+    let Some((donor_id, summary, ocr_status, summary_model, ocr_model)) = donor else {
         return Ok(None);
     };
     let tx = conn.transaction()?;
     tx.execute(
-        "UPDATE files SET summary = ?, summary_status = 'done', ocr_status = ?, reused_from = ? WHERE id = ?",
-        params![summary, ocr_status, donor_id, id],
+        r#"UPDATE files SET summary = ?, summary_status = 'done', ocr_status = ?,
+                  summary_model = ?, ocr_model = ?, reused_from = ? WHERE id = ?"#,
+        params![summary, ocr_status, summary_model, ocr_model, donor_id, id],
     )?;
     tx.execute("DELETE FROM ocr WHERE file_id = ?", params![id])?;
     tx.execute(
@@ -200,6 +208,7 @@ pub fn set_ocr(
     id: &str,
     pages: &[(u32, String)],
     status: &str,
+    model: &str,
 ) -> anyhow::Result<()> {
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM ocr WHERE file_id = ?", params![id])?;
@@ -210,8 +219,8 @@ pub fn set_ocr(
         )?;
     }
     tx.execute(
-        "UPDATE files SET ocr_status = ? WHERE id = ?",
-        params![status, id],
+        "UPDATE files SET ocr_status = ?, ocr_model = ? WHERE id = ?",
+        params![status, (status != "skipped").then_some(model), id],
     )?;
     tx.commit()?;
     Ok(())
@@ -225,10 +234,10 @@ pub fn set_status(conn: &Connection, id: &str, status: SummaryStatus) -> anyhow:
     Ok(())
 }
 
-pub fn set_summary(conn: &Connection, id: &str, summary: &str) -> anyhow::Result<()> {
+pub fn set_summary(conn: &Connection, id: &str, summary: &str, model: &str) -> anyhow::Result<()> {
     conn.execute(
-        "UPDATE files SET summary = ?, summary_status = 'done' WHERE id = ?",
-        params![summary, id],
+        "UPDATE files SET summary = ?, summary_status = 'done', summary_model = ? WHERE id = ?",
+        params![summary, model, id],
     )?;
     Ok(())
 }

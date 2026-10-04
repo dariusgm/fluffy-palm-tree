@@ -127,7 +127,11 @@ For each item, the job:
 3. sends them to llama.cpp (`/v1/chat/completions`);
 4. stores the description (people, objects, scene, visible text, tags) and the OCR text
    as searchable text. Every LLM call is recorded (model, prompt version, raw output,
-   latency, tokens, errors) in the `analyses` table for quality comparison.
+   latency, tokens, errors) in the `analyses` table for quality comparison. The model
+   that wrote a file's summary and OCR text is also kept on the file itself
+   (`files.summary_model`, `files.ocr_model`, the `llm.model` of that run, e.g. including
+   the quantisation tag), so results of different models can be told apart
+   (reused descriptions inherit the donor's model).
 
 Near-duplicate images: `/index` stores a 64-bit perceptual hash (dHash) per image. With
 `llm.phash_reuse_distance = N` (default 0 = off), an image whose hash differs in at most
@@ -167,7 +171,7 @@ so image and video analysis will fail.
 
 | Field | Match |
 |---|---|
-| `kind`, `extension`, `mime`, `root`, `doc_type`, `language`, `encoding`, `format`, `video_codec`, `audio_codec`, `compression`, `archive_format`, `summary_status`, `ocr_status`, `mode_str`, `sha256`, `id`, `tag` | exact, case-insensitive; a list means any of |
+| `kind`, `extension`, `mime`, `root`, `doc_type`, `language`, `encoding`, `format`, `video_codec`, `audio_codec`, `compression`, `archive_format`, `summary_status`, `ocr_status`, `summary_model`, `ocr_model`, `mode_str`, `sha256`, `id`, `tag` | exact, case-insensitive; a list means any of |
 | `path`, `name`, `summary`, `container` | substring, case-insensitive |
 | `width`, `height` (image or video), `duration_secs`, `fps`, `size_bytes`, `page_count`, `uid`, `gid` | number or range |
 | `modified` (alias `mtime`), `created`, `indexed_at` | `"2024-05-01"` (whole day), RFC 3339 timestamp, or range |

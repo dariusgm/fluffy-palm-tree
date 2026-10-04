@@ -150,9 +150,10 @@ async fn process(state: &AppState, job: &Job, item: MediaCandidate, reuse_distan
         }
         Some(Ok(summary)) => {
             let id = item.id.clone();
+            let model = state.llm.model().to_string();
             if let Err(e) = state
                 .db
-                .call(move |c| media::set_summary(c, &id, &summary))
+                .call(move |c| media::set_summary(c, &id, &summary, &model))
                 .await
             {
                 errors.push(e);
@@ -194,9 +195,10 @@ async fn process(state: &AppState, job: &Job, item: MediaCandidate, reuse_distan
     };
     if let Some((pages, status)) = ocr_update {
         let id = item.id.clone();
+        let model = state.llm.model().to_string();
         if let Err(e) = state
             .db
-            .call(move |c| media::set_ocr(c, &id, &pages, status))
+            .call(move |c| media::set_ocr(c, &id, &pages, status, &model))
             .await
         {
             errors.push(e);

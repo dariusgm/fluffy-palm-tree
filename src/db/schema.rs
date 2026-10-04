@@ -122,6 +122,22 @@ CREATE TABLE ocr (
 ALTER TABLE images ADD COLUMN phash BIGINT;
 ALTER TABLE files ADD COLUMN reused_from TEXT;
 "#,
+    r#"
+ALTER TABLE files ADD COLUMN summary_model TEXT;
+ALTER TABLE files ADD COLUMN ocr_model TEXT;
+UPDATE files SET summary_model = (
+    SELECT a.model FROM analyses a
+    WHERE a.file_id = files.id AND a.prompt_version NOT LIKE 'ocr-%' AND a.model IS NOT NULL
+    ORDER BY a.created_at DESC LIMIT 1)
+WHERE summary_status = 'done';
+UPDATE files SET ocr_model = (
+    SELECT a.model FROM analyses a
+    WHERE a.file_id = files.id AND a.prompt_version LIKE 'ocr-%' AND a.model IS NOT NULL
+    ORDER BY a.created_at DESC LIMIT 1)
+WHERE ocr_status IN ('done', 'none');
+UPDATE files SET summary_model = d.summary_model, ocr_model = d.ocr_model
+FROM files d WHERE files.reused_from = d.id;
+"#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {

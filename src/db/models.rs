@@ -354,8 +354,9 @@ pub fn reuse_analysis(conn: &mut Connection, id: &str, sha256: &str) -> anyhow::
     let tx = conn.transaction()?;
     tx.execute(
         r#"UPDATE files SET summary = ?, summary_status = 'done',
-                  ocr_status = (SELECT ocr_status FROM files WHERE id = ?)
-           WHERE id = ?"#,
+                  ocr_status = d.ocr_status, summary_model = d.summary_model,
+                  ocr_model = d.ocr_model
+           FROM files d WHERE d.id = ? AND files.id = ?"#,
         params![summary, donor_id, id],
     )?;
     tx.execute("DELETE FROM ocr WHERE file_id = ?", params![id])?;
