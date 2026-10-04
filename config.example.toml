@@ -30,7 +30,10 @@ path = "/mnt/share/example"
 [llm]
 # Can be overridden with MEDIA_SEARCH_LLM_URL.
 base_url = "http://LLM_HOST:8080"
-model = "your-model-name"
+# Leave empty (or remove) to use the model the llama.cpp server reports; its name, context
+# size and parameters are then stored with every result. Set it for servers that host
+# several models.
+model = ""
 # api_key = ""            # optional, or MEDIA_SEARCH_LLM_API_KEY
 timeout_secs = 600
 workers = 1

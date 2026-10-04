@@ -57,10 +57,22 @@ Asks the configured llama.cpp server for its models. `200` if reachable, otherwi
   "configured_model": "unsloth/Qwen3.8-Flash-Next-GGUF:UD-IQ4_XS",
   "configured_model_loaded": true,
   "models": ["unsloth/Qwen3.8-Flash-Next-GGUF:UD-IQ4_XS"],
+  "model": {
+    "name": "unsloth/Qwen3.8-Flash-Next-GGUF:UD-IQ4_XS",
+    "n_ctx": 180224,
+    "n_ctx_train": 262144,
+    "n_params": 176943899520,
+    "size_bytes": 93671559680,
+    "quantization": "IQ4_XS - 4.25 bpw",
+    "build_info": "b11269-cee37ffea"
+  },
+  "model_error": null,
   "vision": true
 }
 ```
 
+`configured_model` is `llm.model` or, when that is empty, the model the server reports;
+`model` holds what the server says about it (fields are null if it does not expose them).
 `vision` tells whether the server has a vision projector loaded; without it
 `/import_media` cannot describe images. When unreachable the body is
 `{ "reachable": false, "configured_model": "...", "error": "..." }`.

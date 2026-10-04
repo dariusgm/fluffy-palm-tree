@@ -129,9 +129,14 @@ For each item, the job:
    as searchable text. Every LLM call is recorded (model, prompt version, raw output,
    latency, tokens, errors) in the `analyses` table for quality comparison. The model
    that wrote a file's summary and OCR text is also kept on the file itself
-   (`files.summary_model`, `files.ocr_model`, the `llm.model` of that run, e.g. including
-   the quantisation tag), so results of different models can be told apart
-   (reused descriptions inherit the donor's model).
+   (`files.summary_model`, `files.ocr_model`; reused descriptions inherit the donor's
+   model). `llm.model` is optional: when empty, the service asks llama.cpp which model it
+   serves (`/v1/models`, `/props`) at the start of every import job and follows the server
+   when it is switched. Set it only for servers that host several models. The table
+   `llm_models` keeps, per model and context size, the parameters the server reported
+   (`n_ctx`, `n_ctx_train`, `n_params`, `size_bytes`, `quantization`, `build_info`), and
+   each row of `analyses` has the model, `n_ctx`, `prompt_tokens`, `completion_tokens` and
+   `latency_ms` of its call.
 
 Near-duplicate images: `/index` stores a 64-bit perceptual hash (dHash) per image. With
 `llm.phash_reuse_distance = N` (default 0 = off), an image whose hash differs in at most
@@ -151,7 +156,7 @@ every image, `never` none. `ocr_status` per file is `done`, `none` (no text foun
 ### `GET /health/llm`
 
 Checks llama.cpp via `/v1/models` and `/props`. Returns
-`200 {"reachable": true, "configured_model_loaded": ..., "models": [...], "vision": true|false|null}`
+`200 {"reachable": true, "configured_model_loaded": ..., "models": [...], "model": {...}, "vision": true|false|null}`
 or `503` with the error. `vision: false` means llama-server was started without `--mmproj`,
 so image and video analysis will fail.
 

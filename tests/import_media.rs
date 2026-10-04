@@ -229,6 +229,94 @@ async fn llm_health() {
     assert_eq!(body["reachable"], false);
 }
 
+#[tokio::test]
+async fn model_is_taken_from_the_server_when_not_configured() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [{
+            "id": "org/served-model:Q4", "meta": { "n_ctx": 65536, "n_ctx_train": 262144,
+            "n_params": 30_000_000_000_i64, "size": 17_000_000_000_i64, "ftype": "Q4_K_M" } }] })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/props"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "build_info": "b1-abc" })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(completion(ANSWER))
+        .mount(&server)
+        .await;
+    let uri = server.uri();
+    let env = TestEnv::with_config(move |c| {
+        c.llm.base_url = uri;
+        c.llm.model = String::new();
+        c.llm.timeout_secs = 5;
+        c.llm.ocr_images = media_search::config::OcrMode::Never;
+    });
+    write_png(&env.root.join("square.png"), 64, 64);
+    run_job(&env, "/index", json!({ "path": env.root })).await;
+    let job = run_job(&env, "/import_media", json!({})).await;
+    assert_eq!(job["processed"], 1, "{job}");
+
+    let rows = query(
+        &env,
+        "SELECT f.summary_model, a.model, a.n_ctx::VARCHAR, a.prompt_tokens::VARCHAR
+         FROM files f JOIN analyses a ON a.file_id = f.id",
+    )
+    .await;
+    assert_eq!(
+        rows,
+        vec![vec![
+            "org/served-model:Q4",
+            "org/served-model:Q4",
+            "65536",
+            "812"
+        ]]
+    );
+    let models = query(
+        &env,
+        "SELECT model, n_ctx::VARCHAR, n_ctx_train::VARCHAR, n_params::VARCHAR, quantization, build_info
+         FROM llm_models",
+    )
+    .await;
+    assert_eq!(
+        models,
+        vec![vec![
+            "org/served-model:Q4",
+            "65536",
+            "262144",
+            "30000000000",
+            "Q4_K_M",
+            "b1-abc"
+        ]]
+    );
+    let (_, health) = env.call(get("/health/llm")).await;
+    assert_eq!(health["model"]["name"], "org/served-model:Q4");
+    assert_eq!(health["model"]["n_ctx"], 65536);
+}
+
+#[tokio::test]
+async fn import_fails_when_the_model_cannot_be_determined() {
+    let server = MockServer::start().await;
+    let uri = server.uri();
+    let env = TestEnv::with_config(move |c| {
+        c.llm.base_url = uri;
+        c.llm.model = String::new();
+        c.llm.timeout_secs = 5;
+    });
+    write_png(&env.root.join("square.png"), 64, 64);
+    run_job(&env, "/index", json!({ "path": env.root })).await;
+    let job = run_job(&env, "/import_media", json!({})).await;
+    assert_eq!(job["status"], "failed", "{job}");
+    assert!(
+        job["error"].as_str().unwrap().contains("LLM model"),
+        "{job}"
+    );
+}
+
 async fn video_env(interval_secs: u32) -> Option<(MockServer, TestEnv)> {
     if !media_search::extract::tool_available("ffmpeg") {
         eprintln!("skipping: ffmpeg not installed");
@@ -253,6 +341,7 @@ async fn video_env(interval_secs: u32) -> Option<(MockServer, TestEnv)> {
     let uri = server.uri();
     let env = TestEnv::with_config(move |c| {
         c.llm.base_url = uri;
+        c.llm.model = "test-model".into();
         c.llm.timeout_secs = 5;
         c.llm.video_frame_interval_secs = interval_secs;
     });

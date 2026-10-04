@@ -29,6 +29,7 @@ fn env_with(server: &MockServer, mode: OcrMode) -> TestEnv {
     let uri = server.uri();
     TestEnv::with_config(move |c| {
         c.llm.base_url = uri;
+        c.llm.model = "test-model".into();
         c.llm.timeout_secs = 5;
         c.llm.ocr_images = mode;
     })
@@ -150,7 +151,7 @@ async fn already_described_image_only_gets_ocr() {
         hit["summary_model"].is_null(),
         "the description was not redone"
     );
-    assert_eq!(hit["ocr_model"], "your-model-name");
+    assert_eq!(hit["ocr_model"], "test-model");
 }
 
 #[tokio::test]
@@ -251,6 +252,7 @@ async fn text_and_code_documents_get_summaries() {
     let uri = server.uri();
     let env = TestEnv::with_config(move |c| {
         c.llm.base_url = uri;
+        c.llm.model = "test-model".into();
         c.llm.timeout_secs = 5;
         c.llm.doc_summary_max_chars = 200;
     });

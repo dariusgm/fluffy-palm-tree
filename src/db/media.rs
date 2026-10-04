@@ -3,6 +3,7 @@ use duckdb::{Connection, OptionalExt, params, params_from_iter};
 use serde_json::Value;
 
 use super::models::{FileKind, SummaryStatus};
+use crate::llm::client::ModelInfo;
 
 /// One LLM call, kept for comparing extraction quality across prompts and models.
 #[derive(Debug, Clone, Default)]
@@ -10,6 +11,8 @@ pub struct AnalysisRecord {
     pub file_id: String,
     pub ts_secs: Option<f64>,
     pub model: String,
+    /// Context window of the LLM server for this call.
+    pub n_ctx: Option<i64>,
     pub prompt_version: String,
     pub raw_response: Option<String>,
     pub parsed: Option<Value>,
@@ -244,14 +247,16 @@ pub fn set_summary(conn: &Connection, id: &str, summary: &str, model: &str) -> a
 
 pub fn insert_analysis(conn: &Connection, a: &AnalysisRecord) -> anyhow::Result<()> {
     conn.execute(
-        r#"INSERT INTO analyses (id, file_id, ts_secs, model, prompt_version, raw_response, parsed,
-                                 latency_ms, prompt_tokens, completion_tokens, created_at, error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        r#"INSERT INTO analyses (id, file_id, ts_secs, model, n_ctx, prompt_version, raw_response,
+                                 parsed, latency_ms, prompt_tokens, completion_tokens, created_at,
+                                 error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         params![
             uuid::Uuid::new_v4().to_string(),
             a.file_id,
             a.ts_secs,
             a.model,
+            a.n_ctx,
             a.prompt_version,
             a.raw_response,
             a.parsed.as_ref().map(Value::to_string),
@@ -260,6 +265,32 @@ pub fn insert_analysis(conn: &Connection, a: &AnalysisRecord) -> anyhow::Result<
             a.completion_tokens,
             Utc::now(),
             a.error,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Remembers a model together with the settings the server runs it with (one row per
+/// model and context size) for comparing runs.
+pub fn record_model(conn: &Connection, m: &ModelInfo) -> anyhow::Result<()> {
+    conn.execute(
+        r#"INSERT INTO llm_models (model, n_ctx, n_ctx_train, n_params, size_bytes, quantization,
+                                   build_info, first_seen, last_seen)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (model, n_ctx) DO UPDATE SET
+               n_ctx_train = excluded.n_ctx_train, n_params = excluded.n_params,
+               size_bytes = excluded.size_bytes, quantization = excluded.quantization,
+               build_info = excluded.build_info, last_seen = excluded.last_seen"#,
+        params![
+            m.name,
+            m.n_ctx.unwrap_or(0),
+            m.n_ctx_train,
+            m.n_params,
+            m.size_bytes,
+            m.quantization,
+            m.build_info,
+            Utc::now(),
+            Utc::now(),
         ],
     )?;
     Ok(())

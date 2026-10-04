@@ -52,6 +52,8 @@ pub struct RootConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LlmConfig {
     pub base_url: String,
+    /// Model to request. Empty (default) = use the model the server reports.
+    #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub api_key: Option<String>,

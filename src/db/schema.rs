@@ -138,6 +138,21 @@ WHERE ocr_status IN ('done', 'none');
 UPDATE files SET summary_model = d.summary_model, ocr_model = d.ocr_model
 FROM files d WHERE files.reused_from = d.id;
 "#,
+    r#"
+ALTER TABLE analyses ADD COLUMN n_ctx INTEGER;
+CREATE TABLE llm_models (
+    model         TEXT NOT NULL,
+    n_ctx         INTEGER NOT NULL,
+    n_ctx_train   INTEGER,
+    n_params      BIGINT,
+    size_bytes    BIGINT,
+    quantization  TEXT,
+    build_info    TEXT,
+    first_seen    TIMESTAMP NOT NULL,
+    last_seen     TIMESTAMP NOT NULL,
+    PRIMARY KEY (model, n_ctx)
+);
+"#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {

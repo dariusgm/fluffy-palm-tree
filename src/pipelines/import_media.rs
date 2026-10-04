@@ -71,6 +71,15 @@ enum OcrResult {
 
 pub async fn run(state: AppState, job: Arc<Job>, filter: CandidateFilter) -> anyhow::Result<()> {
     let force = filter.force;
+    // Learn which model is loaded (and with what context size) before work is selected.
+    // Only needed for a configured-name-less setup, otherwise the LLM may just be down.
+    if let Err(e) = state.llm.refresh().await {
+        if state.llm.model().is_empty() {
+            return Err(e.context("cannot determine the LLM model"));
+        }
+        tracing::warn!("could not read the LLM model details: {e:#}");
+    }
+    record_model(&state).await?;
     let candidates = state
         .db
         .call(move |c| media::select_candidates(c, &filter))
@@ -150,7 +159,7 @@ async fn process(state: &AppState, job: &Job, item: MediaCandidate, reuse_distan
         }
         Some(Ok(summary)) => {
             let id = item.id.clone();
-            let model = state.llm.model().to_string();
+            let model = state.llm.model();
             if let Err(e) = state
                 .db
                 .call(move |c| media::set_summary(c, &id, &summary, &model))
@@ -195,7 +204,7 @@ async fn process(state: &AppState, job: &Job, item: MediaCandidate, reuse_distan
     };
     if let Some((pages, status)) = ocr_update {
         let id = item.id.clone();
-        let model = state.llm.model().to_string();
+        let model = state.llm.model();
         if let Err(e) = state
             .db
             .call(move |c| media::set_ocr(c, &id, &pages, status, &model))
@@ -216,6 +225,17 @@ async fn process(state: &AppState, job: &Job, item: MediaCandidate, reuse_distan
             }
         }
     }
+}
+
+/// Stores the model details when they are new.
+async fn record_model(state: &AppState) -> anyhow::Result<()> {
+    if let Some(info) = state.llm.take_unrecorded() {
+        state
+            .db
+            .call(move |c| media::record_model(c, &info))
+            .await?;
+    }
+    Ok(())
 }
 
 async fn update_status(state: &AppState, id: &str, status: SummaryStatus) -> anyhow::Result<()> {
@@ -549,11 +569,16 @@ async fn call_llm(
     let mut rec = AnalysisRecord {
         file_id: file_id.to_string(),
         ts_secs: ts,
-        model: state.llm.model().to_string(),
         prompt_version: prompt_version.to_string(),
         ..Default::default()
     };
-    let result = match state.llm.chat(system, parts, max_tokens).await {
+    let chat = state.llm.chat(system, parts, max_tokens).await;
+    // After the call, so a model switched while the job runs is attributed correctly.
+    let info = state.llm.info();
+    rec.model = info.name;
+    rec.n_ctx = info.n_ctx;
+    record_model(state).await?;
+    let result = match chat {
         Ok(c) => {
             let parsed = prompts::parse_json(&c.text);
             let text = interpret(&c.text, parsed.as_ref());

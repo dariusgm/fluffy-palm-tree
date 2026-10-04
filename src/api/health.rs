@@ -10,7 +10,8 @@ pub async fn health() -> Json<Value> {
 }
 
 pub async fn llm(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
-    let configured = state.llm.model().to_string();
+    let refreshed = state.llm.refresh().await;
+    let configured = state.llm.model();
     match state.llm.models().await {
         Ok(models) => {
             let available: Vec<String> = models["data"]
@@ -29,6 +30,8 @@ pub async fn llm(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
                     "configured_model": configured,
                     "configured_model_loaded": available.contains(&configured),
                     "models": available,
+                    "model": state.llm.info(),
+                    "model_error": refreshed.err().map(|e| format!("{e:#}")),
                     "vision": vision,
                 })),
             )
