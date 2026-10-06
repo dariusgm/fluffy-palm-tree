@@ -38,6 +38,8 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    state.db.rebuild_fts_in_background();
+
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("binding {bind}"))?;

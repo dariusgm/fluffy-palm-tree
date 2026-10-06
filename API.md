@@ -1,11 +1,12 @@
 # API reference
 
-HTTP/JSON API of the media search service. Replace `localhost:8080` by the `server.bind`
+HTTP/JSON API of the media search service. Replace `localhost:8081` by the `server.bind`
 address from `config.toml`. How the pipelines work internally is described in
 [README.md](README.md).
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /` | minimal web UI (jobs and search), all assets served by the binary |
 | [`GET /health`](#get-health) | liveness and version |
 | [`GET /health/llm`](#get-healthllm) | is the vision LLM reachable |
 | [`POST /index`](#post-index) | scan a folder and store file metadata (job) |
@@ -41,7 +42,7 @@ address from `config.toml`. How the pipelines work internally is described in
 ## `GET /health`
 
 ```bash
-curl localhost:8080/health
+curl localhost:8081/health
 ```
 ```json
 { "status": "ok", "version": "0.1.0" }
@@ -83,7 +84,7 @@ Scans a directory, stores the metadata of every supported file in the database a
 removes records of files that no longer exist. Sources are only read, never modified.
 
 ```bash
-curl -X POST localhost:8080/index -H 'content-type: application/json' \
+curl -X POST localhost:8081/index -H 'content-type: application/json' \
   -d '{"path": "/mnt/share/photos/2024", "traverse": true}'
 ```
 
@@ -110,8 +111,8 @@ PDFs, a summary of text and code documents, and text recognition (OCR) for image
 scanned PDFs. Results are searchable once the job finishes.
 
 ```bash
-curl -X POST localhost:8080/import_media -H 'content-type: application/json' -d '{}'
-curl -X POST localhost:8080/import_media -H 'content-type: application/json' \
+curl -X POST localhost:8081/import_media -H 'content-type: application/json' -d '{}'
+curl -X POST localhost:8081/import_media -H 'content-type: application/json' \
   -d '{"kind": ["image"], "path_prefix": "/mnt/share/photos", "limit": 50}'
 ```
 
@@ -135,9 +136,9 @@ finished, `skipped` the images that reused the description of a similar image
 ## `POST /search`
 
 ```bash
-curl -X POST localhost:8080/search -H 'content-type: application/json' \
+curl -X POST localhost:8081/search -H 'content-type: application/json' \
   -d '{"q": {"text": "person with red jacket at the beach"}, "limit": 10}'
-curl -X POST localhost:8080/search -H 'content-type: application/json' \
+curl -X POST localhost:8081/search -H 'content-type: application/json' \
   -d '{"q": {"kind": "video", "height": {"gte": 1080}, "video_codec": "h264"}}'
 ```
 

@@ -215,7 +215,7 @@ llama.cpp setup. In short:
 ```bash
 cp config.example.toml config.toml   # adapt roots and LLM URL
 cargo run --release
-curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8081/health
 ```
 
 ## Estimating the work for a share

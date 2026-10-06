@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media Search</title>
+<link href="/assets/bootstrap.min.css" rel="stylesheet">
+<style>
+  :root { --accent: #7c8cff; --accent2: #38d9a9; }
+  body { background: radial-gradient(1200px 600px at 10% -10%, #1b2040 0%, transparent 60%),
+                     radial-gradient(900px 500px at 100% 0%, #10332e 0%, transparent 55%), #0b0d12;
+         min-height: 100vh; }
+  .brand { font-weight: 600; letter-spacing: .02em; }
+  .brand span { background: linear-gradient(90deg, var(--accent), var(--accent2));
+                -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .glass { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
+           border-radius: 1rem; backdrop-filter: blur(8px); }
+  .search-input { background: transparent; border: 0; font-size: 1.25rem; box-shadow: none !important; }
+  .search-input:focus { background: transparent; }
+  .progress { height: 6px; background: rgba(255,255,255,.08); }
+  .bar { background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+  .running .bar { background-size: 200% 100%;
+    background-image: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent));
+    animation: slide 2s linear infinite; }
+  @keyframes slide { to { background-position: -200% 0; } }
+  .dot { width: .6rem; height: .6rem; border-radius: 50%; display: inline-block; margin-right: .4rem; }
+  .dot.running { background: var(--accent2); animation: pulse 1.4s infinite; }
+  .dot.completed { background: #3fb950; } .dot.failed { background: #f85149; }
+  .dot.cancelled, .dot.interrupted { background: #d29922; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(56,217,169,.6); } 100% { box-shadow: 0 0 0 .6rem transparent; } }
+  .muted { color: rgba(255,255,255,.5); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; }
+  .result { cursor: pointer; transition: transform .15s, border-color .15s; }
+  .result:hover { transform: translateY(-2px); border-color: var(--accent); }
+  .kind { font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; }
+  .clip { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .path { word-break: break-all; }
+  pre.ocr { white-space: pre-wrap; max-height: 16rem; overflow: auto; }
+  mark { background: rgba(124,140,255,.35); color: inherit; padding: 0 .1em; border-radius: 3px; }
+  .fade-in { animation: fade .3s ease both; } @keyframes fade { from { opacity: 0; transform: translateY(6px); } }
+</style>
+</head>
+<body>
+<div class="container py-4" style="max-width: 1100px">
+  <header class="d-flex align-items-center justify-content-between mb-4">
+    <h1 class="h4 brand m-0"><span>media</span>search</h1>
+    <div class="small muted" id="health"></div>
+  </header>
+
+  <section class="mb-5">
+    <div class="d-flex align-items-center mb-2">
+      <h2 class="h6 text-uppercase muted m-0">Jobs</h2>
+      <div class="ms-auto d-flex gap-2">
+        <button class="btn btn-sm btn-outline-light" id="btn-index">Index…</button>
+        <button class="btn btn-sm btn-outline-light" id="btn-import">Import media</button>
+      </div>
+    </div>
+    <div id="jobs" class="d-grid gap-2"></div>
+  </section>
+
+  <section>
+    <div class="glass d-flex align-items-center px-3 py-2 mb-2">
+      <input id="q" class="form-control search-input" placeholder="Search names, summaries, OCR text, tags…" autofocus>
+      <select id="kind" class="form-select form-select-sm w-auto ms-2">
+        <option value="">all</option><option>image</option><option>video</option><option>document</option>
+      </select>
+    </div>
+    <div class="small muted mb-3" id="stats">&nbsp;</div>
+    <div id="results" class="row g-3"></div>
+    <div class="text-center my-4"><button id="more" class="btn btn-outline-light btn-sm d-none">Load more</button></div>
+  </section>
+</div>
+
+<div class="modal fade" id="detail" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content" style="background:#12151d">
+    <div class="modal-header border-0"><h5 class="modal-title path" id="d-title"></h5>
+      <button class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body" id="d-body"></div>
+  </div></div>
+</div>
+
+<script src="/assets/bootstrap.bundle.min.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, { headers: { 'content-type': 'application/json' }, ...opts });
+  const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
+  if (!r.ok) throw new Error(j?.error || t || r.status);
+  return j;
+};
+const ago = iso => {
+  if (!iso) return ''; const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
+  return s < 60 ? `${s|0}s ago` : s < 3600 ? `${s/60|0}m ago` : s < 86400 ? `${s/3600|0}h ago` : `${s/86400|0}d ago`;
+};
+const bytes = n => { if (n == null) return ''; const u = ['B','KB','MB','GB','TB']; let i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; };
+
+// ---- health ----
+async function health() {
+  try {
+    const [h, l] = await Promise.all([api('/health'), api('/health/llm').catch(e => ({ reachable: false }))]);
+    $('#health').innerHTML = `v${esc(h.version)} · LLM <span class="dot ${l.reachable ? 'completed' : 'failed'} ms-1"></span>${l.reachable ? esc(l.configured_model || '') : 'offline'}`;
+  } catch { $('#health').textContent = 'offline'; }
+}
+
+// ---- jobs ----
+async function jobs() {
+  let list;
+  try { list = await api('/jobs'); } catch { return; }
+  const el = $('#jobs');
+  if (!list.length) { el.innerHTML = '<div class="muted small">No jobs yet.</div>'; return; }
+  el.innerHTML = list.slice(0, 8).map(j => {
+    const pct = j.found ? Math.min(100, (j.processed + j.failed + j.skipped) / j.found * 100) : (j.status === 'completed' ? 100 : 0);
+    const run = j.status === 'running';
+    const err = j.recent_errors?.length ? `<div class="mono text-danger mt-2 clip">${esc(j.recent_errors[0].path)}: ${esc(j.recent_errors[0].error)}</div>` : '';
+    return `<div class="glass p-3 ${run ? 'running' : ''} fade-in">
+      <div class="d-flex align-items-center">
+        <span class="dot ${esc(j.status)}"></span><strong>${esc(j.kind)}</strong>
+        <span class="ms-2 muted small">${esc(j.status)} · ${ago(j.started_at)}</span>
+        ${run ? `<button class="btn btn-sm btn-link text-danger ms-auto p-0" data-cancel="${esc(j.id)}">cancel</button>` : ''}
+      </div>
+      <div class="progress my-2"><div class="progress-bar bar" style="width:${pct}%"></div></div>
+      <div class="d-flex flex-wrap gap-3 small muted">
+        <span>${j.processed}/${j.found} done</span>
+        ${j.skipped ? `<span>${j.skipped} skipped</span>` : ''}${j.updated ? `<span>${j.updated} updated</span>` : ''}
+        ${j.removed ? `<span>${j.removed} removed</span>` : ''}${j.failed ? `<span class="text-danger">${j.failed} failed</span>` : ''}
+      </div>${j.error ? `<div class="text-danger small mt-2">${esc(j.error)}</div>` : ''}${err}</div>`;
+  }).join('');
+  el.querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => { await api('/jobs/' + b.dataset.cancel, { method: 'DELETE' }).catch(e => alert(e.message)); jobs(); });
+}
+$('#btn-index').onclick = async () => {
+  const path = prompt('Absolute folder path to index'); if (!path) return;
+  try { await api('/index', { method: 'POST', body: JSON.stringify({ path }) }); jobs(); } catch (e) { alert(e.message); }
+};
+$('#btn-import').onclick = async () => {
+  try { await api('/import_media', { method: 'POST', body: '{}' }); jobs(); } catch (e) { alert(e.message); }
+};
+
+// ---- search ----
+const LIMIT = 24; let offset = 0, last = [], seq = 0;
+const hl = (text, q) => {
+  const t = esc(text); const words = q.split(/\s+/).filter(w => w.length > 1).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return words.length ? t.replace(new RegExp(`(${words.map(esc).join('|')})`, 'gi'), '<mark>$1</mark>') : t;
+};
+async function search(more = false) {
+  const my = ++seq; if (!more) { offset = 0; last = []; }
+  const text = $('#q').value.trim(), kind = $('#kind').value;
+  const q = {}; if (text) q.text = text; if (kind) q.kind = kind;
+  let r;
+  try { r = await api('/search', { method: 'POST', body: JSON.stringify({ q, limit: LIMIT, offset }) }); }
+  catch (e) { $('#stats').textContent = e.message; return; }
+  if (my !== seq) return;
+  last = last.concat(r.results); offset += r.results.length;
+  $('#stats').textContent = `${r.total.toLocaleString()} result${r.total === 1 ? '' : 's'}`;
+  $('#more').classList.toggle('d-none', offset >= r.total);
+  const html = r.results.map((f, i) => card(f, last.length - r.results.length + i, text)).join('');
+  if (more) $('#results').insertAdjacentHTML('beforeend', html); else $('#results').innerHTML = html || '<div class="muted">Nothing found.</div>';
+}
+const dim = f => { const m = f.image || f.video || {}; return m.width ? `${m.width}×${m.height}` : f.document?.page_count ? `${f.document.page_count} pages` : ''; };
+function card(f, i, q) {
+  const text = f.summary || f.ocr_text || f.document?.snippet || '';
+  const state = f.summary_status === 'done' ? '' : `<span class="badge text-bg-secondary ms-1">${esc(f.summary_status)}</span>`;
+  return `<div class="col-md-6 col-lg-4 fade-in"><div class="glass result p-3 h-100" data-i="${i}">
+    <div class="d-flex justify-content-between"><span class="kind" style="color:var(--accent)">${esc(f.kind)}</span>
+      <span class="muted small">${esc(dim(f))}</span></div>
+    <div class="fw-semibold text-truncate mt-1" title="${esc(f.name)}">${hl(f.name, q)}</div>
+    <div class="muted small text-truncate mono">${esc(f.rel_path)}</div>
+    <div class="small mt-2 clip ${text ? '' : 'muted'}">${text ? hl(text, q) : 'not analysed yet'}${state}</div></div></div>`;
+}
+const row = (k, v) => v == null || v === '' ? '' : `<tr><td class="muted pe-3">${k}</td><td class="mono path">${esc(v)}</td></tr>`;
+function detail(f) {
+  const q = $('#q').value.trim(), meta = f.image || f.video || f.document || {};
+  $('#d-title').textContent = f.name;
+  const frames = (f.matched_frames || []).map(m => `<div class="small"><span class="mono muted">${m.ts_secs}s</span> ${hl(m.description, q)}</div>`).join('');
+  $('#d-body').innerHTML = `
+    ${f.summary ? `<h6 class="muted text-uppercase small">Summary</h6><p>${hl(f.summary, q)}</p>` : ''}
+    ${f.ocr_text ? `<h6 class="muted text-uppercase small">Extracted text</h6><pre class="ocr mono glass p-3">${hl(f.ocr_text, q)}</pre>` : ''}
+    ${frames ? `<h6 class="muted text-uppercase small">Matching frames</h6>${frames}` : ''}
+    ${f.document?.snippet && !f.summary ? `<h6 class="muted text-uppercase small">Snippet</h6><p>${hl(f.document.snippet, q)}</p>` : ''}
+    <h6 class="muted text-uppercase small mt-3">Metadata</h6>
+    <table class="table table-sm table-borderless mb-0" style="--bs-table-bg:transparent"><tbody>
+      ${row('path', f.path)}${row('mime', f.mime)}${row('size', bytes(f.size_bytes))}${row('modified', f.mtime)}
+      ${row('created', f.created)}${row('indexed', f.indexed_at)}${row('permissions', f.mode_str)}${row('sha256', f.sha256)}
+      ${Object.entries(meta).filter(([k]) => k !== 'snippet').map(([k, v]) => row(k, v)).join('')}
+      ${row('summary', f.summary_status + (f.summary_model ? ' · ' + f.summary_model : ''))}
+      ${row('ocr', f.ocr_status ? f.ocr_status + (f.ocr_model ? ' · ' + f.ocr_model : '') : '')}
+      ${row('score', f.score != null ? f.score.toFixed(2) : '')}${row('id', f.id)}
+    </tbody></table>`;
+  bootstrap.Modal.getOrCreateInstance('#detail').show();
+}
+
+let timer; $('#q').oninput = () => { clearTimeout(timer); timer = setTimeout(() => search(), 250); };
+$('#kind').onchange = () => search();
+$('#more').onclick = () => search(true);
+$('#results').onclick = e => { const c = e.target.closest('[data-i]'); if (c) detail(last[+c.dataset.i]); };
+
+health(); jobs(); search();
+setInterval(jobs, 2000); setInterval(health, 30000);
+</script>
+</body>
+</html>

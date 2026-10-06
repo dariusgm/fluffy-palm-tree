@@ -6,6 +6,8 @@ mod search;
 
 use axum::Router;
 use axum::middleware;
+use axum::http::header;
+use axum::response::Html;
 use axum::routing::{get, post};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
@@ -18,6 +20,25 @@ pub fn router(state: AppState) -> Router {
     let max_body = state.config.server.max_body_bytes;
 
     Router::new()
+        .route("/", get(|| async { Html(include_str!("../../web/index.html")) }))
+        .route(
+            "/assets/bootstrap.min.css",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/css")],
+                    include_str!("../../web/vendor/bootstrap.min.css"),
+                )
+            }),
+        )
+        .route(
+            "/assets/bootstrap.bundle.min.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript")],
+                    include_str!("../../web/vendor/bootstrap.bundle.min.js"),
+                )
+            }),
+        )
         .route("/health", get(health::health))
         .route("/health/llm", get(health::llm))
         .route("/index", post(index::start_index))
