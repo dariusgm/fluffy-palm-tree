@@ -41,6 +41,10 @@ pub struct StagingConfig {
     pub index_workers: usize,
     #[serde(default = "default_true")]
     pub copy_on_index: bool,
+    /// rsync-style patterns (see `exclude::Excludes`): matching files and directories are
+    /// neither indexed nor analysed.
+    #[serde(default = "default_exclude")]
+    pub exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -99,6 +103,10 @@ pub enum OcrMode {
 fn default_max_body() -> usize {
     64 * 1024
 }
+fn default_exclude() -> Vec<String> {
+    vec!["duplicity-*".to_string()]
+}
+
 fn default_index_workers() -> usize {
     4
 }

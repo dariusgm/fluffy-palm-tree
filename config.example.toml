@@ -2,7 +2,7 @@
 # The config path can be overridden with MEDIA_SEARCH_CONFIG=/path/to/config.toml.
 
 [server]
-bind = "0.0.0.0:8080"
+bind = "0.0.0.0:8081"
 # Clients outside these networks get 403.
 allowed_cidrs = ["192.168.0.0/16", "127.0.0.1/32"]
 max_body_bytes = 65536
@@ -20,6 +20,14 @@ index_workers = 4
 # true: copy each file into staging before extracting metadata (default).
 # false: read metadata directly from the source (much faster on SMB for large videos).
 copy_on_index = true
+# rsync-style exclude patterns, one entry per rule. Matching files and directories are
+# skipped entirely (not indexed, not analysed, removed from the index on the next /index).
+#   "duplicity-*"      name pattern, matches at any depth
+#   "cache/"           trailing slash: directories only
+#   "/backup/old/"     path pattern relative to the root (any "/" inside anchors it)
+#   "photos/*/raw"     "*" and "?" stay within one path segment, "**" crosses them
+# Default: ["duplicity-*"]. Set to [] to index everything.
+exclude = ["duplicity-*", "*.tmp"]
 
 # Allowed starting points for /index. Requests outside these roots are rejected.
 # SMB shares should be mounted via CIFS (see INSTALLATION.md) and listed by mount point.

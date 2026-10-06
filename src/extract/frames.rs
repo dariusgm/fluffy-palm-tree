@@ -3,6 +3,23 @@ use std::time::Duration;
 
 use super::run_tool;
 
+/// Without a variable-frame-rate mode ffmpeg writes JPEGs at a constant rate and
+/// duplicates the selected frames. `-fps_mode` replaced `-vsync` in ffmpeg 5.1.
+async fn vfr_flag() -> &'static str {
+    static FLAG: tokio::sync::OnceCell<&'static str> = tokio::sync::OnceCell::const_new();
+    FLAG.get_or_init(|| async {
+        let help = run_tool("ffmpeg", ["-hide_banner", "-h", "full"], Duration::from_secs(30))
+            .await
+            .unwrap_or_default();
+        if String::from_utf8_lossy(&help).contains("-fps_mode") {
+            "-fps_mode"
+        } else {
+            "-vsync"
+        }
+    })
+    .await
+}
+
 /// Seconds between sampled frames: the configured interval, widened for long videos
 /// so that `max_frames` still covers the whole duration.
 pub fn effective_interval(duration_secs: Option<f64>, interval_secs: u32, max_frames: u32) -> f64 {
@@ -54,7 +71,7 @@ pub async fn sample(
             video.as_os_str(),
             "-vf".as_ref(),
             filter.as_ref(),
-            "-fps_mode".as_ref(),
+            vfr_flag().await.as_ref(),
             "vfr".as_ref(),
             "-frames:v".as_ref(),
             frames.as_ref(),

@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod detect;
 pub mod error;
+pub mod exclude;
 pub mod extract;
 pub mod jobs;
 pub mod llm;

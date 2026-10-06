@@ -62,7 +62,8 @@ pub async fn run(
 
     let walker = {
         let (job, target) = (job.clone(), target.clone());
-        tokio::task::spawn_blocking(move || walk(&target, traverse, &job, tx))
+        let exclude = crate::exclude::Excludes::new(&state.config.staging.exclude);
+        tokio::task::spawn_blocking(move || walk(&target, traverse, &exclude, &job, tx))
     };
 
     let rx = Arc::new(Mutex::new(rx));
@@ -122,7 +123,13 @@ pub async fn run(
 
 /// Walks the tree without following symlinks and skips hidden entries. Every regular
 /// file is passed on; the workers decide by content whether it is supported.
-fn walk(target: &ResolvedPath, traverse: bool, job: &Job, tx: mpsc::Sender<PathBuf>) -> WalkResult {
+fn walk(
+    target: &ResolvedPath,
+    traverse: bool,
+    exclude: &crate::exclude::Excludes,
+    job: &Job,
+    tx: mpsc::Sender<PathBuf>,
+) -> WalkResult {
     let mut result = WalkResult {
         seen: HashSet::new(),
         complete: true,
@@ -131,9 +138,18 @@ fn walk(target: &ResolvedPath, traverse: bool, job: &Job, tx: mpsc::Sender<PathB
     if !traverse {
         walker = walker.max_depth(1);
     }
-    let entries = walker
-        .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'));
+    let entries = walker.into_iter().filter_entry(|e| {
+        if e.depth() == 0 {
+            return true;
+        }
+        if e.file_name().to_string_lossy().starts_with('.') {
+            return false;
+        }
+        let rel = target
+            .relative(e.path())
+            .and_then(|p| p.to_str().map(str::to_string));
+        !rel.is_some_and(|rel| exclude.is_excluded(&rel, e.file_type().is_dir()))
+    });
     for entry in entries {
         if job.is_cancelled() {
             result.complete = false;
