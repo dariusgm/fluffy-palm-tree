@@ -37,6 +37,8 @@ enum Outcome {
     /// Same content, stored metadata refreshed (LLM results kept).
     Updated,
     TooLarge,
+    /// Matches `staging.metadata_only`: stored without content and without LLM analysis.
+    MetadataOnly,
     /// Not a supported file type; `removed` if an existing record had to be dropped.
     Unsupported {
         removed: bool,
@@ -82,7 +84,7 @@ pub async fn run(
                     job.inc_found();
                 }
                 match outcome {
-                    Ok(Outcome::Indexed) => job.inc_processed(),
+                    Ok(Outcome::Indexed | Outcome::MetadataOnly) => job.inc_processed(),
                     Ok(Outcome::Updated) => job.inc_updated(),
                     Ok(Outcome::Unchanged | Outcome::TooLarge) => job.inc_skipped(),
                     Ok(Outcome::Unsupported { removed }) => {
@@ -213,11 +215,25 @@ async fn process_file(
         .db
         .call(move |c| models::find_stat(c, &root, &rel))
         .await?;
+    let metadata_only = state.metadata_only.is_excluded(&rel_path, false);
+    // A metadata-only record is complete once it exists in the current index version. A
+    // record from before the file matched `metadata_only` still has content and LLM
+    // results and is replaced below.
+    if metadata_only
+        && existing.as_ref().is_some_and(|s| {
+            s.size_bytes == size
+                && s.mtime == mtime
+                && s.meta_version >= META_VERSION
+                && s.summary_status == SummaryStatus::Skipped.as_str()
+        })
+    {
+        return Ok(Outcome::Unchanged);
+    }
     // Fast path: same size and mtime means unchanged, without reading the file
     // (re-reading a large share on every run would be far too slow over SMB).
     if let Some(old) = existing
         .as_ref()
-        .filter(|s| s.size_bytes == size && s.mtime == mtime)
+        .filter(|s| !metadata_only && s.size_bytes == size && s.mtime == mtime)
     {
         if old.meta_version >= META_VERSION {
             return Ok(Outcome::Unchanged);
@@ -288,6 +304,12 @@ async fn process_file(
         sha256: None,
     };
 
+    if metadata_only {
+        // Not copied to staging, not hashed, no extraction: only what the filesystem and
+        // the file header tell us.
+        save(state, rec, Details::None, SummaryStatus::Skipped).await?;
+        return Ok(Outcome::MetadataOnly);
+    }
     if size > cfg.max_file_bytes {
         save(state, rec, Details::None, SummaryStatus::Skipped).await?;
         return Ok(Outcome::TooLarge);

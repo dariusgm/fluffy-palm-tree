@@ -303,9 +303,15 @@ scripts/         helper scripts (work estimate for a share)
 - DuckDB is accessed through one mutex-protected connection on the blocking thread
   pool (DuckDB has a single writer). Schema changes are append-only migrations in
   `src/db/schema.rs`.
-- DuckDB FTS indexes are static. The `search_docs` table and its BM25 index are rebuilt
-  at startup and after every index and import job. The tokenizer keeps digits, so
-  invoice numbers are searchable.
+- DuckDB FTS indexes are static. The BM25 index (`fts_main_search_docs`) is rebuilt at
+  startup and after every index and import job. The text it is built from lives only in
+  a TEMP table during the rebuild; a search reads the index tables, never a stored copy
+  of the text. The tokenizer keeps digits, so invoice numbers are searchable.
+- `staging.metadata_only` (same patterns as `staging.exclude`, default none) lists files
+  that are recorded with path, size, extension, mtime, mime and kind but without content:
+  no extraction, no hash, no staging copy, no LLM call. Use it for files whose text is
+  huge but not worth searching (e.g. `*.csv`). Files that were indexed before they matched
+  are replaced by a metadata-only record (and lose their LLM results) on the next index run.
 - Every LLM call is stored in `analyses` with its prompt version (`src/llm/prompts.rs`).
   Bump the version when changing a prompt, then compare runs with SQL, e.g.
   `SELECT prompt_version, count(*), avg(latency_ms), count(error) FROM analyses GROUP BY 1`.
@@ -359,6 +365,16 @@ scripts/         helper scripts (work estimate for a share)
 - HEIC/RAW images, EXIF metadata (capture date, camera; GPS optional)
 - Re-derive `files.summary` from stored `analyses.parsed` when the flattening changes
 - Configurable FTS language (e.g. German), periodic FTS rebuilds during long jobs
+- Compact the database file: DuckDB does not return freed blocks to the filesystem, so
+  the file can be several times larger than its data (measured: 6.3 GB file, 0.9 GB of
+  data after purges and rebuilds). `ATTACH 'new.duckdb' AS dst; COPY FROM DATABASE src TO
+  dst;` into a fresh file with the service stopped shrinks it; a `/admin/compact` job or
+  a documented maintenance script would make this routine. Backups are much smaller after.
+- Append-only journal of LLM results (`analyses` and its children are only ~20 MB) as the
+  portable source of truth, with an idempotent ingest endpoint; extracted text stays
+  re-derivable from the files and is not journaled
+- Size limit or per-page storage for very long documents (books), and a separate
+  treatment for tabular files beyond `metadata_only`
 - Optional API token in addition to the IP allowlist; systemd unit file
 
 ## Public repository hygiene

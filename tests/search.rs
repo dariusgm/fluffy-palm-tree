@@ -178,3 +178,27 @@ async fn summaries_and_video_frames_are_searchable() {
     .await;
     assert_eq!(names(&r), vec!["clip.mp4"]);
 }
+
+#[tokio::test]
+async fn indexed_text_is_not_stored_a_second_time() {
+    let env = indexed_env().await;
+    let tables: i64 = env
+        .state
+        .db
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'search_docs'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        tables, 0,
+        "search_docs must only exist while the index is built"
+    );
+    // The search keeps working without it.
+    let r = search(&env, json!({ "q": { "text": "quick fox" } })).await;
+    assert_eq!(names(&r), vec!["notes.txt"]);
+}

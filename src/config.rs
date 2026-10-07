@@ -45,6 +45,11 @@ pub struct StagingConfig {
     /// neither indexed nor analysed.
     #[serde(default = "default_exclude")]
     pub exclude: Vec<String>,
+    /// Same pattern syntax as `exclude`. Matching files are recorded with their metadata
+    /// (path, size, extension, mtime, ...) only: no content is extracted or stored and
+    /// nothing is sent to the LLM.
+    #[serde(default)]
+    pub metadata_only: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

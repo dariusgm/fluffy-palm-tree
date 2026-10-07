@@ -28,6 +28,10 @@ copy_on_index = true
 #   "photos/*/raw"     "*" and "?" stay within one path segment, "**" crosses them
 # Default: ["duplicity-*"]. Set to [] to index everything.
 exclude = ["duplicity-*", "*.tmp"]
+# Same syntax as exclude, but matching files are still recorded: path, size, extension,
+# mtime, mime and kind are stored, nothing is read, extracted or sent to the LLM. Use it for
+# files whose content is large but not worth searching. Default: none.
+metadata_only = ["*.csv"]
 
 # Allowed starting points for /index. Requests outside these roots are rejected.
 # SMB shares should be mounted via CIFS (see INSTALLATION.md) and listed by mount point.

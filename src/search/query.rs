@@ -140,7 +140,7 @@ pub fn build(req: &SearchRequest, fts_available: bool) -> Result<BuiltQuery, Str
             }
             if fts_available {
                 text_mode = Some(TextMode::Fts);
-                score_join = "JOIN (SELECT file_id, fts_main_search_docs.match_bm25(file_id, ?) AS score FROM search_docs) s ON s.file_id = f.id".into();
+                score_join = "JOIN (SELECT id AS file_id, fts_main_search_docs.match_bm25(id, ?) AS score FROM files) s ON s.file_id = f.id".into();
                 join_params.push(DbValue::Text(text));
                 score_expr = "s.score".into();
                 conds.push("s.score IS NOT NULL".into());

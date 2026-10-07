@@ -346,3 +346,75 @@ async fn identical_content_reuses_llm_results() {
         2
     );
 }
+
+#[tokio::test]
+async fn metadata_only_files_keep_metadata_but_no_content() {
+    let env = TestEnv::new();
+    std::fs::write(env.root.join("notes.txt"), "the quick brown fox").unwrap();
+    std::fs::create_dir_all(env.root.join("sub")).unwrap();
+    std::fs::write(env.root.join("sub/data.csv"), "id,secret\n1,zebra\n").unwrap();
+
+    let job = index(&env, json!({ "path": env.root })).await;
+    assert_eq!(job["status"], "completed", "{job}");
+    assert_eq!(job["failed"], 0, "{job}");
+    assert_eq!(job["processed"], 2, "{job}");
+
+    // Metadata is there, content, hash and LLM work are not.
+    assert_eq!(
+        query_i64(
+            &env,
+            "SELECT count(*) FROM files WHERE rel_path = 'sub/data.csv' AND extension = 'csv' \
+             AND size_bytes > 0 AND sha256 IS NULL AND summary_status = 'skipped'"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        query_i64(
+            &env,
+            "SELECT count(*) FROM documents d JOIN files f ON f.id = d.file_id WHERE f.extension = 'csv'"
+        )
+        .await,
+        0
+    );
+    assert!(env.staging_is_empty());
+
+    // Searchable by name, not by content.
+    let (_, r) = env
+        .call(post_json("/search", json!({ "q": { "text": "zebra" } })))
+        .await;
+    assert_eq!(r["total"], 0, "{r}");
+    let (_, r) = env
+        .call(post_json("/search", json!({ "q": { "text": "data" } })))
+        .await;
+    assert_eq!(r["results"][0]["name"], "data.csv", "{r}");
+
+    // Unchanged on the next run.
+    let again = index(&env, json!({ "path": env.root })).await;
+    assert_eq!(again["processed"], 0, "{again}");
+    assert_eq!(again["skipped"], 2, "{again}");
+}
+
+#[tokio::test]
+async fn existing_record_is_replaced_when_a_file_becomes_metadata_only() {
+    let mut env = TestEnv::with_config(|c| c.staging.metadata_only.clear());
+    std::fs::write(env.root.join("data.csv"), "id,secret\n1,zebra\n").unwrap();
+    index(&env, json!({ "path": env.root })).await;
+    assert_eq!(query_i64(&env, "SELECT count(*) FROM documents").await, 1);
+
+    let mut cfg = (*env.state.config).clone();
+    cfg.staging.metadata_only = vec!["*.csv".to_string()];
+    env.state = media_search::AppState::new(cfg, env.state.db.clone()).unwrap();
+
+    let job = index(&env, json!({ "path": env.root })).await;
+    assert_eq!(job["processed"], 1, "{job}");
+    assert_eq!(query_i64(&env, "SELECT count(*) FROM documents").await, 0);
+    assert_eq!(
+        query_i64(
+            &env,
+            "SELECT count(*) FROM files WHERE summary_status = 'skipped'"
+        )
+        .await,
+        1
+    );
+}

@@ -180,6 +180,7 @@ pub struct StoredStat {
     pub sha256: Option<String>,
     pub meta_version: i32,
     pub kind: String,
+    pub summary_status: String,
 }
 
 /// Tables holding rows that belong to a file. All of them are cleared when the file's
@@ -214,7 +215,7 @@ pub fn find_stat(
 ) -> anyhow::Result<Option<StoredStat>> {
     let row = conn
         .query_row(
-            "SELECT id, size_bytes, mtime, sha256, meta_version, kind FROM files WHERE root = ? AND rel_path = ?",
+            "SELECT id, size_bytes, mtime, sha256, meta_version, kind, summary_status FROM files WHERE root = ? AND rel_path = ?",
             params![root, rel_path],
             |r| {
                 Ok(StoredStat {
@@ -224,6 +225,7 @@ pub fn find_stat(
                     sha256: r.get(3)?,
                     meta_version: r.get::<_, Option<i32>>(4)?.unwrap_or(1),
                     kind: r.get(5)?,
+                    summary_status: r.get(6)?,
                 })
             },
         )
