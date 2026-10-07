@@ -12,6 +12,8 @@ address from `config.toml`. How the pipelines work internally is described in
 | [`POST /index`](#post-index) | scan a folder and store file metadata (job) |
 | [`POST /import_media`](#post-import_media) | analyse images, videos and documents with the LLM (job) |
 | [`POST /search`](#post-search) | full-text and metadata search |
+| [`GET /files/{id}`](#get-filesid) | metadata of one indexed file |
+| [`POST /files/delete`](#post-filesdelete) | remove files from the index, optionally from the share |
 | [`GET /jobs`](#get-jobs) | list recent jobs |
 | [`GET /jobs/{id}`](#get-jobsid) | job status and progress |
 | [`DELETE /jobs/{id}`](#delete-jobsid) | cancel a running job |
@@ -218,6 +220,54 @@ Response `200`:
   videos list `matched_frames` (`ts_secs`, `description`).
 - The full-text index is rebuilt when an index or import job finishes. Files added by a
   running job can already be found by metadata filters, but not by `text` yet.
+
+## `GET /files/{id}`
+
+Stored metadata of one file (`id` as in search results): `root`, `rel_path`, `abs_path`,
+`name`, `extension`, `kind`, `mime`, `size_bytes`, `sha256`, `summary`, `summary_status`,
+`ocr_status`. `404` if the id is unknown.
+
+## `POST /files/delete`
+
+Removes files and everything derived from them (metadata, frames, LLM results, tags) from
+the index, without stopping the server. By default only database records are removed and
+the share is untouched, so a later `/index` adds the files back unless they match
+`staging.exclude` in the config.
+
+```bash
+# what would be removed?  (dry run is the default)
+curl -X POST localhost:8081/files/delete -H 'content-type: application/json' \
+  -d '{"path_prefix": "/mnt/share/old-data"}'
+# remove the records
+curl -X POST localhost:8081/files/delete -H 'content-type: application/json' \
+  -d '{"path_prefix": "/mnt/share/old-data", "dry_run": false}'
+# remove the records and the files on the share
+curl -X POST localhost:8081/files/delete -H 'content-type: application/json' \
+  -d '{"ids": ["..."], "delete_source": true, "dry_run": false}'
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `ids` | array of strings | `[]` | file ids to select (at most 10000) |
+| `path_prefix` | string | none | absolute path inside a root; selects that file or everything below that directory. It may no longer exist. A whole root is refused with `400` |
+| `delete_source` | bool | `false` | also delete the files on the share |
+| `dry_run` | bool | `true` | only report; send `false` to act |
+
+At least one of `ids` and `path_prefix` is required; nothing is selected by default.
+Both are combined (union). Unknown fields are rejected with `422`.
+
+Response `200`: `matched`, `bytes`, `by_kind` and a `sample` of up to 20 relative paths.
+When acting it also has `removed_records` and, with `delete_source`, `deleted_source_files`,
+`already_missing`, `error_count` and up to 20 `errors`.
+
+With `delete_source` only regular files known to the index are deleted, and only inside a
+configured root (symlinks and directories are left alone and reported as errors).
+Directories that become empty along the way are removed, never the root. A record is only
+dropped once its file is gone or was already missing; files that fail stay in the index.
+Deleting on the share cannot be undone. Use the dry run first.
+
+Search results omit removed files immediately; the full-text index itself is rebuilt
+when the next index or import job finishes.
 
 ## `GET /jobs`
 
