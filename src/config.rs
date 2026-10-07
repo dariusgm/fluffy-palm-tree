@@ -71,8 +71,6 @@ pub struct LlmConfig {
     /// matching merely similar pictures.
     #[serde(default)]
     pub phash_reuse_distance: u32,
-    pub video_frame_interval_secs: u32,
-    pub video_max_frames: u32,
     /// When images get a separate text-recognition (OCR) call.
     #[serde(default)]
     pub ocr_images: OcrMode,
@@ -175,9 +173,6 @@ impl Config {
         }
         if self.llm.pdf_render_dpi == 0 || self.llm.ocr_max_edge == 0 {
             bail!("llm.pdf_render_dpi and llm.ocr_max_edge must be >= 1");
-        }
-        if self.llm.video_frame_interval_secs == 0 {
-            bail!("llm.video_frame_interval_secs must be >= 1");
         }
         Ok(())
     }

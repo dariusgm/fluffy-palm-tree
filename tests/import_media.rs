@@ -317,7 +317,7 @@ async fn import_fails_when_the_model_cannot_be_determined() {
     );
 }
 
-async fn video_env(interval_secs: u32) -> Option<(MockServer, TestEnv)> {
+async fn video_env() -> Option<(MockServer, TestEnv)> {
     if !media_search::extract::tool_available("ffmpeg") {
         eprintln!("skipping: ffmpeg not installed");
         return None;
@@ -343,7 +343,6 @@ async fn video_env(interval_secs: u32) -> Option<(MockServer, TestEnv)> {
         c.llm.base_url = uri;
         c.llm.model = "test-model".into();
         c.llm.timeout_secs = 5;
-        c.llm.video_frame_interval_secs = interval_secs;
     });
     Some((server, env))
 }
@@ -365,13 +364,12 @@ async fn import_video(env: &TestEnv, secs: u32) -> Vec<f64> {
 }
 
 #[tokio::test]
-async fn video_samples_interval_plus_last_frame() {
-    let Some((_server, env)) = video_env(10).await else {
+async fn video_samples_first_middle_and_last_frame() {
+    let Some((_server, env)) = video_env().await else {
         return;
     };
-    // 0, 10, 20 periodic (fps=1/10 used to drop the 20 s sample) + last frame at 25
     let frames = import_video(&env, 25).await;
-    assert_eq!(frames, vec![0.0, 10.0, 20.0, 25.0]);
+    assert_eq!(frames, vec![0.0, 12.5, 25.0]);
 
     let (_, r) = env
         .call(post_json("/search", json!({ "q": { "text": "bars" } })))
@@ -379,17 +377,17 @@ async fn video_samples_interval_plus_last_frame() {
     assert_eq!(r["results"][0]["name"], "clip.mp4");
     assert_eq!(
         r["results"][0]["matched_frames"].as_array().unwrap().len(),
-        4
+        3
     );
 }
 
 #[tokio::test]
-async fn short_video_gets_first_and_last_frame() {
-    let Some((_server, env)) = video_env(60).await else {
+async fn very_short_video_gets_first_and_last_frame_only() {
+    let Some((_server, env)) = video_env().await else {
         return;
     };
-    let frames = import_video(&env, 5).await;
-    assert_eq!(frames, vec![0.0, 5.0]);
+    let frames = import_video(&env, 3).await;
+    assert_eq!(frames, vec![0.0, 3.0]);
 }
 
 /// A smooth pattern with ups and downs in both directions (a plain gradient would hash to

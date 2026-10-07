@@ -108,7 +108,7 @@ steps run again.
 | Kind | Step 1: what we see (`summary`) | Step 2: what text is inside (`ocr`) |
 |---|---|---|
 | Image | description of the image | full transcription of visible text (see `llm.ocr_images`) |
-| Video | frames: first, every `video_frame_interval_secs` (default 60 s), last; described and merged | — |
+| Video | frames: first, middle (50 %) and last; described and merged | — |
 | PDF | description of the rendered first page | scanned PDFs (no text layer) only: every page transcribed, up to `llm.pdf_ocr_max_pages`; text PDFs already have their text via `pdftotext` |
 | Text, Markdown, Code | summary of the extracted text (first `llm.doc_summary_max_chars` characters): purpose, main content, topics (names, dates, identifiers), tags | — (the text itself is already searchable) |
 

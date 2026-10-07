@@ -391,18 +391,11 @@ async fn analyze_video(
     staged: crate::staging::StagedFile,
 ) -> anyhow::Result<String> {
     let cfg = &state.config.llm;
-    let interval = frames::effective_interval(
-        item.duration_secs,
-        cfg.video_frame_interval_secs,
-        cfg.video_max_frames,
-    );
     let dir = state.staging.temp_dir()?;
     let sampled = frames::sample(
         staged.path(),
         dir.path(),
-        interval,
         item.duration_secs,
-        cfg.video_max_frames,
         cfg.image_max_edge,
     )
     .await?;
