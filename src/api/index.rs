@@ -12,6 +12,11 @@ pub async fn start_index(
     State(state): State<AppState>,
     Json(req): Json<IndexRequest>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let job_id = spawn(&state, req).await?;
+    Ok(accepted(&job_id))
+}
+
+pub(super) async fn spawn(state: &AppState, req: IndexRequest) -> Result<String, ApiError> {
     let roots = state.config.roots.clone();
     let requested = req.path.clone();
     let target = tokio::task::spawn_blocking(move || resolve_in_roots(&roots, &requested))
@@ -27,8 +32,12 @@ pub async fn start_index(
             index::run(st, job, target, traverse)
         })
         .await?;
-    Ok((
+    Ok(job.id.clone())
+}
+
+pub(super) fn accepted(job_id: &str) -> (StatusCode, Json<Value>) {
+    (
         StatusCode::ACCEPTED,
-        Json(json!({ "job_id": job.id, "status_url": format!("/jobs/{}", job.id) })),
-    ))
+        Json(json!({ "job_id": job_id, "status_url": format!("/jobs/{job_id}") })),
+    )
 }

@@ -49,6 +49,8 @@ pub fn router(state: AppState) -> Router {
         .route("/files/{id}", get(files::get_file))
         .route("/jobs", get(jobs::list))
         .route("/jobs/{id}", get(jobs::get).delete(jobs::cancel))
+        .route("/jobs/{id}/pause", post(jobs::pause))
+        .route("/jobs/{id}/resume", post(jobs::resume))
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(max_body))
         .layer(middleware::from_fn_with_state(allow, ip_allowlist))

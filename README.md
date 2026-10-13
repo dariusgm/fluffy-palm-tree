@@ -66,7 +66,7 @@ The full reference with request fields, response examples and error codes is in
 |---|---|
 | `GET /health` | implemented |
 | `POST /index` | implemented |
-| `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}` | implemented |
+| `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}`, `POST /jobs/{id}/pause`, `POST /jobs/{id}/resume` | implemented |
 | `POST /search` | implemented |
 | `POST /import_media` | implemented |
 | `GET /health/llm` | implemented |
@@ -199,13 +199,18 @@ so image and video analysis will fail.
   "started_at": "...", "finished_at": null, "error": null,
   "recent_errors": [ { "path": "/mnt/share/x/broken.png", "error": "..." } ] }
 ```
-- `status` is one of `running | completed | failed | cancelled | interrupted`.
+- `status` is one of `running | completed | failed | cancelled | paused | interrupted`.
 - `found` counts supported files. `skipped` counts unchanged files and files above
   `staging.max_file_bytes`. `updated` counts unchanged content whose stored metadata was
   refreshed. `removed` counts records deleted because their file no longer exists (or
   is no longer a supported type).
 - `GET /jobs` lists the last 100 jobs. `DELETE /jobs/{id}` cancels a running job
   (`202`), or returns `409` if the job has already finished.
+- `POST /jobs/{id}/pause` stops a running job after its in-flight items (`202`); it ends as
+  `paused`. `POST /jobs/{id}/resume` starts a new job with the stored parameters of a
+  `paused`, `cancelled` or `interrupted` job (`202` with the new `job_id`; `409` for other
+  states or if the same job is already running). Finished items are skipped, so the new job
+  continues where the old one stopped. This also works after a restart of the service.
 
 ## Getting started
 

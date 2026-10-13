@@ -132,6 +132,26 @@ async fn jobs_endpoints() {
 }
 
 #[tokio::test]
+async fn finished_jobs_cannot_be_paused_or_resumed() {
+    let env = TestEnv::new();
+    populate(&env);
+    let job = index(&env, json!({ "path": env.root })).await;
+    let id = job["id"].as_str().unwrap();
+    for action in ["pause", "resume"] {
+        let req = axum::http::Request::post(format!("/jobs/{id}/{action}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let (status, _) = env.call(req).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{action}");
+    }
+    let req = axum::http::Request::post("/jobs/unknown/resume")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let (status, _) = env.call(req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn indexes_pdf_when_poppler_installed() {
     if !media_search::extract::tool_available("pdftotext") {
         eprintln!("skipping: pdftotext not installed");

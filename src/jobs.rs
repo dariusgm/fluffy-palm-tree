@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -23,6 +23,8 @@ pub enum JobStatus {
     Completed,
     Failed,
     Cancelled,
+    /// Stopped on request like `Cancelled`, meant to be resumed later.
+    Paused,
     Interrupted,
 }
 
@@ -33,6 +35,7 @@ impl JobStatus {
             JobStatus::Completed => "completed",
             JobStatus::Failed => "failed",
             JobStatus::Cancelled => "cancelled",
+            JobStatus::Paused => "paused",
             JobStatus::Interrupted => "interrupted",
         }
     }
@@ -84,6 +87,7 @@ pub struct Job {
     removed: AtomicU64,
     updated: AtomicU64,
     cancel: CancellationToken,
+    paused: AtomicBool,
     inner: Mutex<JobInner>,
 }
 
@@ -201,6 +205,7 @@ impl JobRegistry {
             removed: AtomicU64::new(0),
             updated: AtomicU64::new(0),
             cancel: CancellationToken::new(),
+            paused: AtomicBool::new(false),
             inner: Mutex::new(JobInner {
                 status: JobStatus::Running,
                 finished_at: None,
@@ -236,6 +241,9 @@ impl JobRegistry {
                 }
             };
             match result {
+                Ok(Ok(())) if running.is_cancelled() && running.paused.load(Ordering::Relaxed) => {
+                    running.finish(JobStatus::Paused, None)
+                }
                 Ok(Ok(())) if running.is_cancelled() => running.finish(JobStatus::Cancelled, None),
                 Ok(Ok(())) => running.finish(JobStatus::Completed, None),
                 Ok(Err(e)) => running.finish(JobStatus::Failed, Some(format!("{e:#}"))),
@@ -291,6 +299,27 @@ impl JobRegistry {
             }
             None => false,
         }
+    }
+
+    /// Stops a running job like `cancel`, but it ends as `paused` so it can be resumed.
+    pub fn pause(&self, id: &str) -> bool {
+        match self.live.read().expect("jobs lock").get(id) {
+            Some(job) => {
+                job.paused.store(true, Ordering::Relaxed);
+                job.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a job of this kind with these params is currently running.
+    pub fn is_running(&self, kind: &str, params: &Value) -> bool {
+        self.live
+            .read()
+            .expect("jobs lock")
+            .values()
+            .any(|j| j.kind == kind && &j.params == params)
     }
 
     pub async fn get(&self, id: &str) -> anyhow::Result<Option<JobView>> {
@@ -407,6 +436,22 @@ mod tests {
         assert_eq!(v.params["a"], 1);
         assert!(v.finished_at.is_some());
         assert_eq!(reg.list().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn job_can_be_paused() {
+        let reg = JobRegistry::new(Db::open_in_memory().unwrap());
+        let job = reg
+            .start("test", Value::Null, |job| async move {
+                job.cancel_token().cancelled().await;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(reg.is_running("test", &Value::Null));
+        assert!(reg.pause(&job.id));
+        assert_eq!(wait_done(&reg, &job.id).await.status, "paused");
+        assert!(!reg.is_running("test", &Value::Null));
     }
 
     #[tokio::test]
